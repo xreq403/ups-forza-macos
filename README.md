@@ -127,10 +127,10 @@ open UPSForza.xcodeproj          # ⌘R corre "UPS Forza Dev", ⌘U corre los te
 cd UPSKit && swift test          # tests sin Xcode
 ```
 
-- **Debug y Release separadas:** la build Debug usa otro identificador (`com.etorres.UPSForza.debug`), así no se mezcla con la versión instalada. No corras las dos a la vez, porque ambas consultan la UPS por USB.
+- **Debug y Release separadas:** la build Debug usa otro identificador (`com.xreq403.UPSForza.debug`), así no se mezcla con la versión instalada. No corras las dos a la vez, porque ambas consultan la UPS por USB.
 - **Ajustes de la Debug:** para que la build Debug use tus ajustes, copiálos una vez:
   ```bash
-  defaults export com.etorres.UPSForza - | defaults import com.etorres.UPSForza.debug -
+  defaults export com.xreq403.UPSForza - | defaults import com.xreq403.UPSForza.debug -
   ```
 - **Ícono:** para regenerarlo desde el logo:
   ```bash

@@ -26,7 +26,7 @@ struct StatusPopover: View {
 
             Divider()
             HStack {
-                Button("Ajustes") {
+                Button("Ajustes...") {
                     NSApp.activate()
                     openSettings()
                 }
@@ -83,9 +83,9 @@ struct StatusPill: View {
         switch phase {
         case .unknown: return ("…", .gray)
         case .online: return ("Red eléctrica", .green)
-        case .onBattery: return ("En batería", .orange)
-        case .warning: return ("Apagando", .red)
-        case .shuttingDown: return ("Apagado enviado", .red)
+        case .onBattery: return ("En batería", .warningAmber)
+        case .warning: return ("Apagando", .dangerRed)
+        case .shuttingDown: return ("Apagado enviado", .dangerRed)
         }
     }
 }
@@ -110,9 +110,9 @@ struct BatteryCard: View {
     let outageStart: Date?
 
     private var tint: Color {
-        if status.batteryLow || status.batteryPercent < 25 { return .red }
-        if status.onBattery { return .orange }
-        return .green
+        if status.batteryLow || status.batteryPercent < 25 { return .dangerRed }
+        if status.onBattery { return .warningAmber }
+        return .batteryGreen
     }
 
     var body: some View {
@@ -142,11 +142,11 @@ struct BatteryCard: View {
                         Image(systemName: "bolt.slash.fill")
                     }
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.warningAmber)
                 } else if status.charging {
                     Label("Recargando", systemImage: "bolt.fill")
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Color.batteryGreen)
                 } else {
                     Label("Carga completa", systemImage: "checkmark.circle.fill")
                         .font(.caption)
@@ -234,7 +234,7 @@ struct BeeperToggleTile: View {
                         .font(.callout.weight(.semibold))
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(monitor.beeperSyncError == nil ? Color.secondary : Color.red)
+                        .foregroundStyle(monitor.beeperSyncError == nil ? Color.secondary : Color.dangerRed)
                 }
                 Spacer(minLength: 0)
                 if isApplying {
@@ -287,11 +287,11 @@ struct FlagsRow: View {
 
     private var items: [(String, Color)] {
         var r: [(String, Color)] = []
-        if status.upsFault { r.append(("Falla de la UPS", .red)) }
-        if status.batteryLow { r.append(("Batería baja", .red)) }
+        if status.upsFault { r.append(("Falla de la UPS", .dangerRed)) }
+        if status.batteryLow { r.append(("Batería baja", .dangerRed)) }
         if status.avrActive { r.append(("AVR activo", .blue)) }
         if status.testInProgress { r.append(("Test en curso", .blue)) }
-        if status.shutdownActive { r.append(("Apagado UPS programado", .orange)) }
+        if status.shutdownActive { r.append(("Apagado UPS programado", .warningAmber)) }
         return r
     }
 }
@@ -304,25 +304,27 @@ struct WarningBanner: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Image(systemName: "power.circle.fill")
+                        .foregroundStyle(Color.dangerRed)
                     Text("Apagando en \(deadline, style: .timer)")
                         .monospacedDigit()
                 }
                 .font(.headline)
                 Text(reason.description)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack {
                     if monitor.canPostpone {
                         Button("Posponer 5 min") { monitor.postpone() }
+                            .buttonStyle(.solid(.secondary))
                     }
                     Spacer()
                     Button("Apagar ahora", role: .destructive) { monitor.shutdownNow() }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                        .buttonStyle(.solid())
                 }
-                .controlSize(.small)
             }
             .padding(12)
-            .background(.red.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.dangerRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.dangerRed.opacity(0.55)))
         }
     }
 }

@@ -42,7 +42,7 @@ El código Python (`discovery/forza_ups.py`) queda como **referencia** del proto
 
 | | Debug (Xcode ⌘R) | Release (`scripts/build-app.sh`) |
 |---|---|---|
-| Bundle id | `com.etorres.UPSForza.debug` | `com.etorres.UPSForza` |
+| Bundle id | `com.xreq403.UPSForza.debug` | `com.xreq403.UPSForza` |
 | Nombre visible | UPS Forza Dev | UPS Forza |
 | Ubicación | DerivedData de Xcode | `/Applications/UPSForza.app` |
 | Ajustes | dominio propio (`…debug`) | dominio propio |
@@ -51,7 +51,7 @@ Los bundle id distintos evitan que macOS mezcle las dos copias, por ejemplo en e
 
 - **No correr las dos a la vez:** ambas consultan la misma UPS por USB y las respuestas se pueden mezclar.
 - **Ajustes al usar Debug por primera vez:** copiar los ajustes de la Release con
-  `defaults export com.etorres.UPSForza - | defaults import com.etorres.UPSForza.debug -`.
+  `defaults export com.xreq403.UPSForza - | defaults import com.xreq403.UPSForza.debug -`.
   Si no, la Debug arranca con los valores por defecto, por ejemplo con la alarma activada.
 
 ## 2. Arquitectura
@@ -152,11 +152,14 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
 - [x] Prueba en el equipo real: `upsctl` (estado y protocolo `T` OK) y la app leyendo la UPS
 - [x] Prueba de corte real: detección, notificaciones y retorno de la luz (2026-10-12)
 - [x] Verificar el ícono en las notificaciones de la versión instalada
-- [ ] Prueba de apagado real: aviso con cuenta regresiva y apagado de la Mac (bajar temporalmente *Tras minutos sin luz* a 2 min)
+- [x] Prueba de apagado real (2026-10-13): aviso a los 2 min sin luz, apagado a los 60 s y la Mac se apagó correctamente
 
 ### Fase 2 — App completa
 - [ ] Ventana principal con dashboard y gráficos en vivo (Swift Charts)
-- [ ] Historial de cortes (SwiftData): inicio, duración, voltaje mínimo y exportación a CSV
+- [ ] Historial de eventos de la red (SwiftData), con exportación a CSV:
+  - **Cortes de luz:** inicio, duración y voltaje mínimo de batería.
+  - **Activaciones del AVR:** inicio, duración, tipo (*buck* si la salida es menor que la entrada, *boost* si es mayor) y voltajes de entrada y salida. Mide qué tan estable es la red.
+  - **Resumen por día y semana:** cantidad de cortes, tiempo total sin luz, cantidad de activaciones del AVR, tiempo total con AVR y rango de voltaje de entrada (mín. y máx.).
 - [ ] Controles: test de batería (`T`), cancelar apagado (`C`) y apagar la UPS con `S<n>`, con confirmación
 - [ ] Helper daemon root (`SMAppService.daemon` + XPC): apagado forzado y funcionamiento sin sesión abierta
 

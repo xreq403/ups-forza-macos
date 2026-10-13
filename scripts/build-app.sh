@@ -12,6 +12,7 @@ if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
 fi
 
 xcodebuild -project UPSForza.xcodeproj -scheme UPSForza -configuration Release \
+    -destination 'generic/platform=macOS' \
     -derivedDataPath build/DerivedData -quiet build ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"}
 
 APP="build/UPSForza.app"
@@ -21,9 +22,12 @@ cp -R build/DerivedData/Build/Products/Release/UPSForza.app "$APP"
 # Que macOS no registre la copia intermedia de DerivedData: con varias copias del
 # mismo bundle id, Notificaciones puede tomar una vieja (p. ej. sin ícono).
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-for p in build/DerivedData/Build/Products/*/UPSForza.app; do
-    [[ -d "$p" ]] && "$LSREGISTER" -u "$PWD/$p" 2>/dev/null || true
-done
+unregister_build_copies() {
+    for p in build/DerivedData/Build/Products/*/UPSForza.app "$APP"; do
+        [[ -d "$p" ]] && "$LSREGISTER" -u "$PWD/$p" 2>/dev/null || true
+    done
+}
+unregister_build_copies
 echo "OK: $APP"
 
 if [[ "${1:-}" == "--install" ]]; then
@@ -31,5 +35,7 @@ if [[ "${1:-}" == "--install" ]]; then
     rm -rf "/Applications/UPSForza.app" "/Applications/UPS Forza.app"
     cp -R "$APP" /Applications/
     open "/Applications/UPSForza.app"
+    sleep 2
+    unregister_build_copies   # que solo quede registrada la copia instalada
     echo "Instalada en /Applications"
 fi

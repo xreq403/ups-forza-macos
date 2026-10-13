@@ -56,7 +56,7 @@ struct SettingsView: View {
                     Text("Alarma sonora")
                     Text("Se aplica a la UPS al abrir la app y cada vez que se reconecta. Desactivada, la UPS no pita en los cortes; las notificaciones de la Mac siguen llegando.")
                     if let error = monitor.beeperSyncError {
-                        Text(error).foregroundStyle(.red)
+                        Text(error).foregroundStyle(Color.dangerRed)
                     }
                 }
                 LabeledContent("Modelo", value: "Forza NT-2402PRO")
@@ -85,7 +85,7 @@ struct LoginItemToggle: View {
         Toggle(isOn: $enabled) {
             Text("Abrir al iniciar sesión")
             if let error {
-                Text(error).foregroundStyle(.red)
+                Text(error).foregroundStyle(Color.dangerRed)
             }
         }
         .onChange(of: enabled) { _, newValue in

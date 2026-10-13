@@ -43,7 +43,7 @@ struct ShutdownWarningView: View {
         VStack(spacing: 14) {
             Image(systemName: "power.circle.fill")
                 .font(.system(size: 48))
-                .foregroundStyle(.red)
+                .foregroundStyle(Color.dangerRed)
                 .symbolEffect(.pulse)
 
             Text("La Mac se apagará")
@@ -66,13 +66,12 @@ struct ShutdownWarningView: View {
             HStack(spacing: 10) {
                 if monitor.canPostpone {
                     Button("Posponer 5 min") { monitor.postpone() }
+                        .buttonStyle(.solid(.secondary, large: true))
                         .keyboardShortcut(.cancelAction)
                 }
                 Button("Apagar ahora", role: .destructive) { monitor.shutdownNow() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .buttonStyle(.solid(large: true))
             }
-            .controlSize(.large)
             .padding(.top, 4)
         }
         .padding(28)

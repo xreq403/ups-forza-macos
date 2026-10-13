@@ -179,6 +179,16 @@ ent=8.5V sal=224.4V carga=6% bat=25.18–25.29V bits=10001000
 - **La entrada no baja a 0 V con la luz cortada:** marca ~8,5 V residuales. Para detectar el corte hay que usar el bit b7, no el voltaje de entrada.
 - La salida en batería es ~224 V, contra 235–239 V con luz.
 
+**Primera activación del AVR registrada (2026-10-13, 07:07):**
+
+```
+ent=239.3V sal=201.8V bits=00101000
+```
+
+- Con la entrada en el límite alto, la UPS activó la reducción (*buck*, b5 = 1) y bajó la salida a ~202 V sin usar la batería.
+- El resto del tiempo, con la entrada entre 233 y 239 V, la salida sigue a la entrada.
+- El firmware no indica si el AVR está en *buck* o *boost*: se deduce comparando la salida con la entrada.
+
 ### 3.6 Estimación del % de batería
 
 Curva actual, interpolada linealmente y válida para carga ligera (< 20 %):
@@ -266,7 +276,7 @@ Después de ordenar el apagado de la Mac, se puede enviar `S<n>` a la UPS. Así 
 ### 5.4 Ideas futuras
 
 - Estimar la autonomía restante a partir de la pendiente del voltaje.
-- Historial de cortes de luz.
+- Historial de cortes de luz y de activaciones del AVR, para medir la estabilidad de la red (planificado en la Fase 2 de [PLAN.md](PLAN.md)).
 
 El ícono en la barra de menús con el estado y el % ya está implementado.
 
@@ -279,7 +289,7 @@ El ícono en la barra de menús con el estado y el % ya está implementado.
 - [x] Notificaciones: `UNUserNotificationCenter` nativo.
 - [x] Alarma sonora: configurable desde la app (`Q` probado).
 - [ ] ¿Apagar también la UPS tras apagar la Mac (`S<n>`)? ¿Con qué retardo?
-- [ ] Probar el apagado real de la Mac desde la app.
+- [x] Probar el apagado real de la Mac desde la app (2026-10-13: funcionó).
 - [ ] Hacer una prueba de descarga de 10 a 15 minutos para calibrar la curva y medir la autonomía.
 - [ ] Probar en el equipo real los comandos de control `T`, `C` y `S`.
 - [ ] Modelo de Mac: si es portátil, tiene batería propia y eso cambia la urgencia del apagado.
