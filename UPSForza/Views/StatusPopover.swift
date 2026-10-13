@@ -15,7 +15,8 @@ struct StatusPopover: View {
             }
 
             if let s = monitor.status {
-                BatteryCard(status: s, outageStart: monitor.phase.outageStart)
+                BatteryCard(status: s, outageStart: monitor.phase.outageStart, autonomy: monitor.autonomy,
+                            recharge: monitor.recharge)
                     .opacity(monitor.link == .connected ? 1 : 0.5)
                 MetricsGrid(status: s)
                     .opacity(monitor.link == .connected ? 1 : 0.5)
@@ -78,7 +79,7 @@ struct StatusPopover: View {
                 .foregroundStyle(.secondary)
             Text(monitor.link == .searching ? "Buscando la UPS…" : "Sin comunicación con la UPS")
                 .font(.callout.weight(.medium))
-            Text("Conecta el cable USB de la UPS al dock.")
+            Text("Conecta el cable USB de la UPS.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -129,11 +130,29 @@ private struct PillLabelStyle: LabelStyle {
 struct BatteryCard: View {
     let status: UPSStatus
     let outageStart: Date?
+    var autonomy: AutonomyEstimate? = nil
+    var recharge: RechargeEstimate? = nil
 
     private var tint: Color {
         if status.batteryLow || status.batteryPercent < 25 { return .dangerRed }
         if status.onBattery { return .warningAmber }
         return .batteryGreen
+    }
+
+    /// Tiempo aproximado hasta la carga completa, redondeado a 10 min (es una estimación).
+    private var rechargeText: String {
+        guard let recharge else { return "Recargando" }
+        let rounded = max(Int((recharge.minutesLeft() / 10).rounded()) * 10, 10)
+        let time = rounded >= 60 ? "\(rounded / 60) h" + (rounded % 60 > 0 ? " \(rounded % 60) min" : "") : "\(rounded) min"
+        return "Recargando · completa en ~\(time)"
+    }
+
+    private var rechargeHelp: String {
+        guard let recharge else { return "El cargador de la UPS está reponiendo la batería." }
+        let rate = String(format: "%.0f %% por hora", recharge.percentPerHour)
+        return "Estimado: con luz, el voltaje lo impone el cargador. El % parte del nivel al terminar el corte (\(recharge.startPercent) %) y suma "
+            + (recharge.measured ? "\(rate), el ritmo medido en recargas anteriores." : "\(rate) (valor típico: se ajusta midiendo esta recarga).")
+            + " Se da por llena cuando el voltaje se estabiliza en flotación."
     }
 
     var body: some View {
@@ -164,10 +183,21 @@ struct BatteryCard: View {
                     }
                     .font(.caption)
                     .foregroundStyle(Color.warningAmber)
+                    if let autonomy {
+                        Label {
+                            Text(autonomyText(autonomy)).monospacedDigit()
+                        } icon: {
+                            Image(systemName: "hourglass")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(String(format: "Estimado con la última calibración y el consumo del corte (~%.0f W). Es aproximado: cerca del final la batería cae más rápido.", autonomy.watts))
+                    }
                 } else if status.charging {
-                    Label("Recargando", systemImage: "bolt.fill")
+                    Label(rechargeText, systemImage: "bolt.fill")
                         .font(.caption)
                         .foregroundStyle(Color.batteryGreen)
+                        .help(rechargeHelp)
                 } else {
                     Label("Carga completa", systemImage: "checkmark.circle.fill")
                         .font(.caption)
@@ -179,6 +209,12 @@ struct BatteryCard: View {
         .padding(12)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
+}
+
+private func autonomyText(_ a: AutonomyEstimate) -> String {
+    let m = max(Int(a.minutes.rounded()), 0)
+    let value = m < 1 ? "menos de 1 min" : "~\(m) min"
+    return a.shutdownMinutes != nil ? "Apagado en \(value)" : String(format: "Quedan %@ (hasta %.1f V)", value, a.limitVolts)
 }
 
 struct MetricsGrid: View {

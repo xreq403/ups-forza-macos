@@ -15,12 +15,18 @@ public struct OutageRecord: Codable, Sendable, Equatable, Identifiable {
     public var shutdownReason: ShutdownReason?
     /// Reconstruido a partir del registro de texto (datos aproximados).
     public var imported: Bool
+    /// Desenchufe de una prueba de calibración: no es un corte de la red y no cuenta
+    /// en las estadísticas. `nil` en los registros anteriores.
+    public var calibration: Bool?
 
-    public init(id: UUID = UUID(), start: Date, end: Date? = nil, imported: Bool = false) {
+    public var isCalibration: Bool { calibration == true }
+
+    public init(id: UUID = UUID(), start: Date, end: Date? = nil, imported: Bool = false, calibration: Bool = false) {
         self.id = id
         self.start = start
         self.end = end
         self.imported = imported
+        self.calibration = calibration ? true : nil
     }
 
     mutating func include(_ s: UPSStatus) {
@@ -209,6 +215,8 @@ public enum HistoryLine: Codable, Sendable, Equatable {
     case day(DayStats)
     case batteryTest(BatteryTestRecord)
     case microOutage(MicroOutageRecord)
+    case calibration(CalibrationRecord)
+    case recharge(RechargeRecord)
 }
 
 public struct HistorySnapshot: Codable, Sendable {
@@ -217,18 +225,23 @@ public struct HistorySnapshot: Codable, Sendable {
     public var days: [DayStats]
     public var batteryTests: [BatteryTestRecord]
     public var microOutages: [MicroOutageRecord]
+    public var calibrations: [CalibrationRecord]
+    public var recharges: [RechargeRecord]
     /// Episodios en curso (los demás sin `end` quedaron sin cerrar).
     public var currentOutageID: UUID?
     public var currentAVRID: UUID?
 
     public init(outages: [OutageRecord] = [], avr: [AVRRecord] = [], days: [DayStats] = [],
                 batteryTests: [BatteryTestRecord] = [], microOutages: [MicroOutageRecord] = [],
+                calibrations: [CalibrationRecord] = [], recharges: [RechargeRecord] = [],
                 currentOutageID: UUID? = nil, currentAVRID: UUID? = nil) {
         self.outages = outages
         self.avr = avr
         self.days = days
         self.batteryTests = batteryTests
         self.microOutages = microOutages
+        self.calibrations = calibrations
+        self.recharges = recharges
         self.currentOutageID = currentOutageID
         self.currentAVRID = currentAVRID
     }
@@ -252,6 +265,8 @@ final class HistoryStore {
     private var days: [String: DayStats] = [:]
     private var batteryTests: [UUID: BatteryTestRecord] = [:]
     private var microOutages: [UUID: MicroOutageRecord] = [:]
+    private var calibrations: [UUID: CalibrationRecord] = [:]
+    private var rechargeRecords: [UUID: RechargeRecord] = [:]
     /// Lecturas en batería todavía no confirmadas como corte.
     private var pendingMicro: (start: Date, readings: Int)?
     private var currentOutageID: UUID?
@@ -267,10 +282,10 @@ final class HistoryStore {
 
     // MARK: Eventos del monitor
 
-    func outageStarted(at start: Date) {
+    func outageStarted(at start: Date, calibration: Bool = false) {
         guard currentOutageID == nil else { return }   // ya hay uno abierto
         pendingMicro = nil                             // se confirmó: no es un microcorte
-        let record = OutageRecord(start: start)
+        let record = OutageRecord(start: start, calibration: calibration)
         currentOutageID = record.id
         outages[record.id] = record
         append(.outage(record))
@@ -363,6 +378,8 @@ final class HistoryStore {
         days = [:]
         batteryTests = [:]
         microOutages = [:]
+        calibrations = [:]
+        rechargeRecords = [:]
         pendingMicro = nil
         currentOutageID = nil
         currentAVRID = nil
@@ -382,6 +399,34 @@ final class HistoryStore {
 
     var lastBatteryTest: BatteryTestRecord? {
         batteryTests.values.max { $0.start < $1.start }
+    }
+
+    /// Último corte terminado con su % mínimo (para estimar la recarga tras reiniciar).
+    var lastFinishedOutage: (end: Date, minPercent: Int)? {
+        guard let o = outages.values.filter({ $0.end != nil && $0.minBatteryPercent != nil })
+            .max(by: { $0.end! < $1.end! }) else { return nil }
+        return (o.end!, o.minBatteryPercent!)
+    }
+
+    func record(recharge r: RechargeRecord) {
+        rechargeRecords[r.id] = r
+        append(.recharge(r))
+    }
+
+    var recharges: [RechargeRecord] { Array(rechargeRecords.values) }
+
+    func record(calibration c: CalibrationRecord) {
+        calibrations[c.id] = c
+        append(.calibration(c))
+    }
+
+    var lastCalibration: CalibrationRecord? {
+        calibrations.values.max { $0.start < $1.start }
+    }
+
+    /// La calibración más reciente que sirve para estimar la autonomía.
+    var lastUsableCalibration: CalibrationRecord? {
+        calibrations.values.filter(\.isUsable).max { $0.start < $1.start }
     }
 
     /// Fusiona un archivo de historial (JSONL) de otro monitor, p. ej. el de la app
@@ -419,6 +464,8 @@ final class HistoryStore {
             days: days.values.filter { $0.day >= sinceKey }.sorted { $0.day > $1.day },
             batteryTests: batteryTests.values.filter { $0.start >= since }.sorted { $0.start > $1.start },
             microOutages: microOutages.values.filter { $0.end >= since }.sorted { $0.start > $1.start },
+            calibrations: calibrations.values.filter { $0.start >= since }.sorted { $0.start > $1.start },
+            recharges: rechargeRecords.values.filter { $0.start >= since }.sorted { $0.start > $1.start },
             currentOutageID: currentOutageID,
             currentAVRID: currentAVRID
         )
@@ -433,6 +480,8 @@ final class HistoryStore {
         case .day(let d): days[d.day] = d
         case .batteryTest(let t): batteryTests[t.id] = t
         case .microOutage(let m): microOutages[m.id] = m
+        case .calibration(let c): calibrations[c.id] = c
+        case .recharge(let r): rechargeRecords[r.id] = r
         }
     }
 
@@ -451,7 +500,7 @@ final class HistoryStore {
         let cutoffKey = Self.dayKey(cutoff)
         outages = outages.filter { ($0.value.end ?? $0.value.start) >= cutoff }
         microOutages = microOutages.filter { $0.value.end >= cutoff }
-        // Los tests se conservan siempre: el de referencia puede tener años.
+        // Los tests y las calibraciones se conservan siempre: el de referencia puede tener años.
 
         avr = avr.filter { ($0.value.end ?? $0.value.start) >= cutoff }
         days = days.filter { $0.key >= cutoffKey }
@@ -462,6 +511,9 @@ final class HistoryStore {
         lines += days.values.sorted { $0.day < $1.day }.map(HistoryLine.day)
         lines += batteryTests.values.sorted { $0.start < $1.start }.map(HistoryLine.batteryTest)
         lines += microOutages.values.sorted { $0.start < $1.start }.map(HistoryLine.microOutage)
+        lines += calibrations.values.sorted { $0.start < $1.start }.map(HistoryLine.calibration)
+        // Las recargas se conservan (son pocas): miden el cargador.
+        lines += rechargeRecords.values.sorted { $0.start < $1.start }.map(HistoryLine.recharge)
         let encoder = JSONEncoder()
         let data = lines.compactMap { try? encoder.encode($0) }
             .reduce(into: Data()) { $0 += $1; $0 += Data("\n".utf8) }
@@ -524,7 +576,7 @@ public enum HistorySummary {
             let key = HistoryStore.dayKey(start)
             var s = DaySummary(day: key, date: start)
 
-            for o in snap.outages {
+            for o in snap.outages where !o.isCalibration {
                 let oEnd = o.end ?? (o.id == snap.currentOutageID ? now : o.start)
                 let overlap = min(oEnd, end).timeIntervalSince(max(o.start, start))
                 if o.start >= start && o.start < end { s.outages += 1 }

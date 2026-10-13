@@ -79,6 +79,7 @@ struct SettingsView: View {
                     Text("Test de batería automático")
                     Text("Con luz estable, la UPS alimenta la Mac ~6 s desde la batería. Avisa solo si hay falla o desgaste.")
                 }
+                CalibrationRow()
                 LabeledContent("Modelo", value: "Forza NT-2402PRO")
                 LabeledContent("Protocolo", value: monitor.protocolVariant.map { "Voltronic-QS-Hex (\($0))" } ?? "—")
                 if let s = monitor.status, let v = s.nominalOutputVoltage, let f = s.nominalFrequency,

@@ -156,6 +156,22 @@ final class DaemonService: NSObject, UPSDaemonProtocol {
         }
     }
 
+    func startCalibration(maxMinutes: Int, reply: @escaping @Sendable (Data?) -> Void) {
+        clients.touch()
+        Task {
+            let response = await core.startCalibration(maxMinutes: maxMinutes)
+            reply(try? DaemonIdentity.jsonEncoder.encode(response))
+        }
+    }
+
+    func cancelCalibration(reply: @escaping @Sendable () -> Void) {
+        clients.touch()
+        Task {
+            await core.cancelCalibration()
+            reply()
+        }
+    }
+
     func series(minutes: Int, reply: @escaping @Sendable (Data?) -> Void) {
         clients.touch()
         Task {

@@ -32,4 +32,13 @@ public enum BatteryEstimator {
         }
         return 0
     }
+
+    /// Inversa de la curva: voltaje que corresponde a `percent` en batería.
+    public static func volts(forPercent percent: Double) -> Double {
+        if percent >= curve[0].percent { return curve[0].volts }
+        for (hi, lo) in zip(curve, curve.dropFirst()) where percent >= lo.percent {
+            return lo.volts + (percent - lo.percent) / (hi.percent - lo.percent) * (hi.volts - lo.volts)
+        }
+        return curve.last!.volts
+    }
 }

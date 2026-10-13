@@ -6,6 +6,7 @@
 //   swift run upsctl raw M        envía un comando y muestra la respuesta cruda
 //   swift run upsctl beeper off   desactiva la alarma sonora (on para activarla)
 //   swift run upsctl battery-test envía T (test rápido de batería) y sigue el estado 30 s
+//   swift run upsctl discharge-probe  prueba T01 (test de 1 min) y CT (cancelar test)
 
 import Foundation
 import UPSKit
@@ -79,12 +80,90 @@ func runBatteryTest() throws {
     print("  Conclusión:               \(accepted ? "la UPS admite el test de batería" : "la UPS no hizo el test (no lo admite o lo ignoró)")")
 }
 
+/// Envía un comando y devuelve la respuesta como texto, o "ninguna" si no responde.
+func sendDescribed(_ command: String) throws -> String {
+    do {
+        let r = try ups.transport.send(command, expectReply: true, timeout: 1.5)
+        return "«" + String(decoding: r.filter { $0 != 0x0D && $0 != 0x00 }, as: UTF8.self) + "»"
+    } catch TransportError.timeout {
+        return "ninguna"
+    }
+}
+
+/// Diagnóstico para la calibración: ¿acepta la UPS un test por tiempo (`T01`, 1 min)
+/// y su cancelación (`CT`)? Sigue el bit b2 unos 20 s, cancela y comprueba que vuelve a la red.
+/// Si aparece un corte real (b7), cancela y termina.
+func runDischargeProbe() throws {
+    let before = try ups.statusSync()
+    guard !before.onBattery else { fail("Hay un corte de luz en curso: no se envía el test.") }
+    guard !before.testInProgress else { fail("Ya hay un test en curso (b2).") }
+    print("Antes: bits=\(before.statusBitsString) bat=\(String(format: "%.2f", before.batteryVoltage)) V "
+        + "consumo=\(before.loadPercent)% salida=\(before.outputVoltage) V")
+    print("Enviando T01 (test de 1 minuto)…")
+    let replyT = try sendDescribed("T01")
+    print("Respuesta a T01: \(replyT)\n")
+    print("  t    bits      b2 test  b7 batería  bat V   consumo  salida")
+
+    func row(_ t: Int, _ s: UPSStatus) {
+        print(String(format: "%3d s  %@  %@       %@          %5.2f   %3d%%     %5.1f V",
+                     t, s.statusBitsString, s.testInProgress ? "sí" : "no", s.onBattery ? "sí" : "no",
+                     s.batteryVoltage, s.loadPercent, s.outputVoltage))
+    }
+
+    var testSeconds = 0, firstTest: Int?, lastTest: Int?, sawBattery = false
+    var minBattery = before.batteryVoltage
+    for t in 1...20 {
+        Thread.sleep(forTimeInterval: 1)
+        guard let s = try? ups.statusSync() else { print(String(format: "%3d s  (sin lectura)", t)); continue }
+        row(t, s)
+        minBattery = min(minBattery, s.batteryVoltage)
+        if s.onBattery { sawBattery = true; break }
+        if s.testInProgress {
+            testSeconds += 1
+            if firstTest == nil { firstTest = t }
+            lastTest = t
+        } else if firstTest == nil && t >= 8 {
+            break   // la UPS no inició nada
+        }
+    }
+
+    let stillTesting = (try? ups.statusSync().testInProgress) ?? false
+    var replyCT = "—", cancelledAt: Int?
+    if stillTesting || sawBattery {
+        print("\nEnviando CT (cancelar test)…")
+        replyCT = try sendDescribed("CT")
+        print("Respuesta a CT: \(replyCT)")
+        for t in 1...10 {
+            Thread.sleep(forTimeInterval: 1)
+            guard let s = try? ups.statusSync() else { continue }
+            row(t, s)
+            if !s.testInProgress && !s.onBattery { cancelledAt = t; break }
+        }
+    }
+
+    let timed = (lastTest ?? 0) - (firstTest ?? 0) >= 10 || stillTesting
+    print("\nResumen:")
+    print("  Respuesta a T01:          \(replyT)")
+    print("  Bit de test (b2):         \(firstTest == nil ? "no" : "sí, \(testSeconds) s seguidos")")
+    print("  Pasó a batería (b7):      \(sawBattery ? "SÍ (corte real o el test lo marca)" : "no")")
+    print("  Voltaje mínimo:           \(String(format: "%.2f V (antes %.2f V)", minBattery, before.batteryVoltage))")
+    print("  Respuesta a CT:           \(replyCT)")
+    print("  Cancelación:              \(cancelledAt.map { "volvió a la red \($0) s después de CT" } ?? (stillTesting ? "NO: el test siguió (termina solo al minuto)" : "—"))")
+    let conclusion: String
+    if firstTest == nil { conclusion = "la UPS no admite T01" }
+    else if !timed { conclusion = "T01 se comportó como el test rápido (~6 s): no hay test por tiempo" }
+    else if cancelledAt != nil { conclusion = "admite T<n> y CT: sirve para calibrar sin desenchufar" }
+    else { conclusion = "admite T<n> pero no CT: el test dura los minutos pedidos" }
+    print("  Conclusión:               \(conclusion)")
+}
+
 var args = Array(CommandLine.arguments.dropFirst())
 var json = false
 var loop: Double?
 var raw: String?
 var beeper: Bool?
 var batteryTest = false
+var dischargeProbe = false
 
 while !args.isEmpty {
     let a = args.removeFirst()
@@ -105,8 +184,9 @@ while !args.isEmpty {
         }
         args.removeFirst()
     case "battery-test": batteryTest = true
+    case "discharge-probe": dischargeProbe = true
     case "-h", "--help":
-        print("Uso: upsctl [--json] [--loop SEG] | upsctl raw COMANDO | upsctl beeper on|off | upsctl battery-test")
+        print("Uso: upsctl [--json] [--loop SEG] | upsctl raw COMANDO | upsctl beeper on|off | upsctl battery-test | upsctl discharge-probe")
         exit(0)
     default: fail("Argumento desconocido: \(a)")
     }
@@ -116,7 +196,7 @@ let ups = ForzaUPS()
 ups.start()
 let waitUntil = Date(timeIntervalSinceNow: 3)
 while !ups.isConnected && Date() < waitUntil { Thread.sleep(forTimeInterval: 0.05) }
-guard ups.isConnected else { fail("No se encontró la UPS (VID 0665 / PID 5161). ¿Está conectado el dock?") }
+guard ups.isConnected else { fail("No se encontró la UPS. ¿Está conectado el cable USB?") }
 
 let encoder = JSONEncoder()
 encoder.outputFormatting = [.sortedKeys]
@@ -132,6 +212,10 @@ do {
     }
     if batteryTest {
         try runBatteryTest()
+        exit(0)
+    }
+    if dischargeProbe {
+        try runDischargeProbe()
         exit(0)
     }
     if let beeper {

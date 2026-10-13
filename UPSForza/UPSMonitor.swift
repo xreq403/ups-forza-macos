@@ -29,6 +29,12 @@ final class UPSMonitor {
     private(set) var backendError: String?
     private(set) var batteryTestRunning = false
     private(set) var lastBatteryTest: BatteryTestRecord?
+    private(set) var calibration: CalibrationState?
+    private(set) var lastCalibration: CalibrationRecord?
+    /// Minutos que quedan durante un corte (con una calibración guardada).
+    private(set) var autonomy: AutonomyEstimate?
+    /// Recarga en curso tras un corte.
+    private(set) var recharge: RechargeEstimate?
     /// Cambia al borrar el historial, para que las vistas lo recarguen.
     private(set) var historyRevision = 0
 
@@ -52,6 +58,7 @@ final class UPSMonitor {
     @ObservationIgnored private var lastPushed: MonitorSettings?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var ticks = 0
+    @ObservationIgnored private var calibrationOutage = false
     @ObservationIgnored private let notifier = Notifier()
     @ObservationIgnored private let warningPanel = ShutdownWarningPanel()
 
@@ -105,6 +112,23 @@ final class UPSMonitor {
             batteryTestRunning = false
             return BatteryTestResponse(error: String(describing: error))
         }
+    }
+
+    /// Inicia la prueba de descarga. Devuelve el error, o `nil` si arrancó.
+    func startCalibration(maxMinutes: Int) async -> String? {
+        guard let backend else { return "El monitor no está listo." }
+        do {
+            let error = try await backend.startCalibration(maxMinutes: maxMinutes).error
+            await refresh()
+            return error
+        } catch {
+            return String(describing: error)
+        }
+    }
+
+    func cancelCalibration() async {
+        try? await backend?.cancelCalibration()
+        await refresh()
     }
 
     func loadSeries(_ range: SeriesRange) async throws -> [SeriesPoint] {
@@ -226,6 +250,10 @@ final class UPSMonitor {
         logURL = URL(fileURLWithPath: snap.logPath)
         batteryTestRunning = snap.batteryTestRunning
         lastBatteryTest = snap.lastBatteryTest
+        calibration = snap.calibration
+        lastCalibration = snap.lastCalibration
+        autonomy = snap.autonomy
+        recharge = snap.recharge
         for recorded in snap.events { handle(recorded, link: snap.link) }
         lastEventID = snap.lastEventID
         if !phase.isWarning { warningPanel.close() }
@@ -236,10 +264,17 @@ final class UPSMonitor {
     private func handle(_ recorded: RecordedEvent, link: LinkState) {
         switch recorded.event {
         case .monitor(.outageConfirmed):
-            notifier.post("Corte de luz", "La Mac está funcionando con la batería de la UPS.")
+            // El desenchufe de la calibración no es un corte: no se avisa.
+            calibrationOutage = calibration != nil
+            guard !calibrationOutage else { return }
+            let estimate = autonomy.map { a in
+                a.shutdownMinutes != nil ? " Se apagará en ~\(Int(a.minutes.rounded())) min." : " Autonomía estimada: ~\(Int(a.minutes.rounded())) min."
+            } ?? ""
+            notifier.post("Corte de luz", "La Mac está funcionando con la batería de la UPS." + estimate)
 
         case .monitor(.powerRestored(let duration, let cancelled)):
             warningPanel.close()
+            guard !calibrationOutage else { calibrationOutage = false; return }
             notifier.post("Volvió la luz", "El corte duró \(duration.durationText)."
                 + (cancelled ? " Se canceló el apagado." : ""))
 
@@ -264,7 +299,7 @@ final class UPSMonitor {
         case .monitor(.communicationLost):
             notifier.post(
                 link == .searching ? "UPS no detectada" : "Sin comunicación con la UPS",
-                "Revisa el cable USB o el dock. La Mac no se apagará mientras no haya datos."
+                "Revisa la conexión por cable USB. La Mac no se apagará mientras no haya datos."
             )
 
         case .monitor(.communicationRestored):
@@ -290,6 +325,21 @@ final class UPSMonitor {
             default:
                 break
             }
+
+        case .calibrationStopped(let reason):
+            notifier.post("Vuelve a enchufar la UPS", "Calibración: \(reason.description.lowercased()). Se guarda el resultado cuando vuelva la luz.", urgent: true)
+
+        case .calibrationFinished(let c):
+            historyRevision += 1
+            if let fit = c.fit, let minutes = c.projectedMinutes(to: c.floorVoltage) {
+                notifier.post("Calibración guardada", String(format: "Con ~%.0f W la batería baja %.3f V/min: ~%d min hasta %.1f V.",
+                                                             c.averageWatts, fit.slope, Int(minutes.rounded()), c.floorVoltage))
+            } else {
+                notifier.post("Calibración guardada", "La descarga fue corta: no alcanza para calcular la autonomía. Prueba con al menos 10 minutos.")
+            }
+
+        case .calibrationAbandoned:
+            notifier.post("Calibración cancelada", "No se desenchufó la UPS en 5 minutos.")
         }
     }
 

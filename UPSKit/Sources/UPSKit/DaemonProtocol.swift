@@ -16,6 +16,9 @@ import Foundation
     func mergeHistory(_ jsonl: Data, reply: @escaping @Sendable (Int) -> Void)
     /// Test rápido de batería (`BatteryTestResponse` en JSON). Tarda ~10 s.
     func runBatteryTest(reply: @escaping @Sendable (Data?) -> Void)
+    /// Inicia una prueba de descarga para calibrar (`CalibrationResponse` en JSON).
+    func startCalibration(maxMinutes: Int, reply: @escaping @Sendable (Data?) -> Void)
+    func cancelCalibration(reply: @escaping @Sendable () -> Void)
     /// Serie temporal del panel (`[SeriesPoint]` en JSON) para `minutes` (60, 360 o 1440).
     func series(minutes: Int, reply: @escaping @Sendable (Data?) -> Void)
     /// Ajustes de energía de macOS (`SystemPowerSettings` en JSON).

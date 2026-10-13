@@ -72,6 +72,12 @@ public enum CoreEvent: Codable, Sendable, Equatable {
     case shutdownForced(reason: ShutdownReason)
     /// Terminó un test de batería (manual o automático).
     case batteryTestFinished(BatteryTestRecord)
+    /// La descarga de calibración terminó: hay que volver a enchufar la UPS.
+    case calibrationStopped(CalibrationStopReason)
+    /// Volvió la luz y se guardó el resultado de la calibración.
+    case calibrationFinished(CalibrationRecord)
+    /// No se desenchufó la UPS a tiempo: la calibración se canceló.
+    case calibrationAbandoned
 }
 
 /// Respuesta a un pedido de test de batería: el resultado, o por qué no se hizo.
@@ -108,6 +114,13 @@ public struct MonitorSnapshot: Codable, Sendable {
     public var logPath: String
     public var batteryTestRunning: Bool
     public var lastBatteryTest: BatteryTestRecord?
+    /// Calibración en curso.
+    public var calibration: CalibrationState?
+    public var lastCalibration: CalibrationRecord?
+    /// Minutos que quedan durante un corte (con una calibración válida).
+    public var autonomy: AutonomyEstimate?
+    /// Recarga en curso tras un corte.
+    public var recharge: RechargeEstimate?
 }
 
 /// Qué hacer si, tras ordenar el apagado, la Mac sigue encendida.
@@ -266,8 +279,25 @@ public actor MonitorCore {
             lastEventID: nextEventID - 1,
             logPath: log.url.path,
             batteryTestRunning: batteryTestRunning,
-            lastBatteryTest: lastBatteryTest ?? history?.lastBatteryTest
+            lastBatteryTest: lastBatteryTest ?? history?.lastBatteryTest,
+            calibration: calibration,
+            lastCalibration: lastCalibration ?? history?.lastCalibration,
+            autonomy: autonomy(),
+            recharge: rechargeEstimate
         )
+    }
+
+    /// Consumo promedio del corte en curso (suaviza el % que informa la UPS).
+    private var outageLoad: (sum: Int, count: Int) = (0, 0)
+
+    private func autonomy() -> AutonomyEstimate? {
+        guard let s = status, s.onBattery, calibration == nil, outageLoad.count > 0,
+              let cal = [lastCalibration, history?.lastUsableCalibration].compactMap({ $0 }).filter(\.isUsable)
+                .max(by: { $0.start < $1.start })
+        else { return nil }
+        let elapsed = engine.phase.outageStart.map { Date.now.timeIntervalSince($0) } ?? 0
+        return Autonomy.estimate(volts: s.batteryVoltage, averageLoad: Double(outageLoad.sum) / Double(outageLoad.count),
+                                 elapsed: elapsed, calibration: cal, policy: settings.policy)
     }
 
     public func update(settings new: MonitorSettings) {
@@ -276,7 +306,7 @@ public actor MonitorCore {
         guard new != settings || firstSettings else { return }
         let beeperChanged = new.beeperEnabled != settings.beeperEnabled || firstSettings
         settings = new
-        engine.policy = new.policy
+        engine.policy = effectivePolicy
         let p = new.policy
         log.write("Ajustes: batería baja UPS=\(p.onUPSLowBattery ? "sí" : "no") mín=\(p.minBatteryPercent)% "
             + "máx=\(p.maxMinutesOnBattery) min aviso=\(p.warningSeconds) s consulta=\(new.pollInterval) s "
@@ -301,9 +331,10 @@ public actor MonitorCore {
         guard !polling else { return }
         polling = true
         defer { polling = false }
-        engine.policy = settings.policy
+        engine.policy = effectivePolicy
         do {
-            let s = try await device.status()
+            var s = try await device.status()
+            trackRecharge(&s, at: .now)
             status = s
             lastUpdate = .now
             lastError = nil
@@ -311,6 +342,8 @@ public actor MonitorCore {
             if s.onBattery { onlineSince = nil } else if onlineSince == nil { onlineSince = .now }
             logReading(s)
             handle(engine.ingest(s, at: .now))
+            calibrationStep(s, at: .now)
+            outageLoad = s.onBattery ? (outageLoad.sum + s.loadPercent, outageLoad.count + 1) : (0, 0)
             history?.ingest(s, at: .now)
             series.add(s, at: .now)
             if beeperEnforced && s.beeperOn != settings.beeperEnabled { await syncBeeper() }
@@ -396,6 +429,7 @@ public actor MonitorCore {
         guard !s.onBattery else { return BatteryTestResponse(error: "Hay un corte de luz en curso.") }
         guard case .online = engine.phase else { return BatteryTestResponse(error: "La UPS no está en funcionamiento normal con luz.") }
         guard !batteryTestRunning, !s.testInProgress else { return BatteryTestResponse(error: "Ya hay un test en curso.") }
+        guard calibration == nil else { return BatteryTestResponse(error: "Hay una calibración en curso.") }
         batteryTestRunning = true
         defer { batteryTestRunning = false }
 
@@ -447,12 +481,159 @@ public actor MonitorCore {
     /// estable. Un intento fallido no se repite hasta el próximo intervalo.
     private func runScheduledBatteryTestIfDue() async {
         let days = settings.batteryTestIntervalDays
-        guard days > 0, let since = onlineSince,
+        guard days > 0, calibration == nil, let since = onlineSince,
               Date.now.timeIntervalSince(since) >= Self.scheduledTestStableOnline else { return }
         let last = [history?.lastBatteryTest?.start, lastScheduledAttempt].compactMap { $0 }.max()
         if let last, Date.now.timeIntervalSince(last) < Double(days) * 86_400 { return }
         lastScheduledAttempt = .now
         _ = await runBatteryTest(trigger: .scheduled)
+    }
+
+    // MARK: Recarga
+
+    private var rechargeTracker = RechargeTracker()
+    private var rechargeSeeded = false
+    private var rechargeRate: (percentPerHour: Double, measured: Bool) = (Recharge.defaultPercentPerHour, false)
+
+    /// Con luz el % por voltaje siempre da 100 (lo impone el cargador): tras un corte
+    /// se estima la recarga hasta que el voltaje se estabiliza en flotación, y cada
+    /// recarga completa se guarda para medir el ritmo real del cargador.
+    private func trackRecharge(_ s: inout UPSStatus, at now: Date) {
+        if !rechargeSeeded {
+            rechargeSeeded = true
+            rechargeRate = Recharge.rate(from: history?.recharges ?? [])
+            // Tras reiniciar el monitor, retomar la recarga del último corte si no terminó.
+            if let last = history?.lastFinishedOutage, now.timeIntervalSince(last.end) < 86_400,
+               !(history?.recharges.contains { $0.start >= last.end.addingTimeInterval(-60) } ?? false) {
+                rechargeTracker.resume(percent: last.minPercent, since: last.end)
+            }
+        }
+        guard let done = rechargeTracker.ingest(&s, at: now, rate: rechargeRate) else { return }
+        history?.record(recharge: done)
+        rechargeRate = Recharge.rate(from: history?.recharges ?? [done])
+        log.write(String(format: "RECARGA completa: %d %% → 100 %% en %@ (%.1f %%/h). Ritmo del cargador: %.1f %%/h%@",
+                         done.startPercent, done.duration.durationText, done.percentPerHour,
+                         rechargeRate.percentPerHour, rechargeRate.measured ? "" : " (típico)"))
+    }
+
+    /// Recarga en curso para la interfaz.
+    private var rechargeEstimate: RechargeEstimate? {
+        guard let a = rechargeTracker.active, status?.onBattery == false else { return nil }
+        return RechargeEstimate(startPercent: a.percent, since: a.since,
+                                percentPerHour: rechargeRate.percentPerHour, measured: rechargeRate.measured)
+    }
+
+    // MARK: Calibración
+
+    private var calibration: CalibrationState?
+    private var lastCalibration: CalibrationRecord?
+
+    /// Política aplicada: durante la descarga de calibración se suspenden los umbrales
+    /// de % y de tiempo (el usuario está presente y la prueba se detiene en el voltaje
+    /// mínimo). La batería baja de la UPS sigue apagando la Mac.
+    private var effectivePolicy: ShutdownPolicy {
+        var p = settings.policy
+        if calibration?.suspendsSoftThresholds == true {
+            p.minBatteryPercent = 0
+            p.maxMinutesOnBattery = 0
+        }
+        return p
+    }
+
+    /// Inicia una prueba de descarga: el usuario desenchufa la UPS, se registran las
+    /// lecturas hasta el voltaje mínimo o `maxMinutes`, y al volver la luz se guarda.
+    public func startCalibration(maxMinutes: Int) -> CalibrationResponse {
+        guard link == .connected, let s = status else { return CalibrationResponse(error: "La UPS no está conectada.") }
+        guard !s.onBattery, case .online = engine.phase else { return CalibrationResponse(error: "Hay un corte de luz en curso.") }
+        guard calibration == nil else { return CalibrationResponse(error: "Ya hay una calibración en curso.") }
+        guard !batteryTestRunning, !s.testInProgress else { return CalibrationResponse(error: "Hay un test de batería en curso.") }
+        guard !s.charging else {
+            return CalibrationResponse(error: String(format: "La batería todavía se está recargando (%.2f V). Espera a que llegue a %.1f V.",
+                                                     s.batteryVoltage, BatteryEstimator.floatVoltage))
+        }
+        let minutes = min(max(maxMinutes, 5), 180)
+        calibration = CalibrationState(phase: .waitingForUnplug(deadline: .now.addingTimeInterval(Calibration.unplugTimeout)),
+                                       maxMinutes: minutes, voltageBefore: s.batteryVoltage)
+        log.write(String(format: "CALIBRACIÓN iniciada: máx. %d min, mínimo %.1f V, batería %.2f V. Esperando que se desenchufe la UPS",
+                         minutes, Calibration.floorVoltage, s.batteryVoltage))
+        return CalibrationResponse()
+    }
+
+    /// Detiene la prueba. Si la UPS ya estaba en batería, el resultado se guarda al volver la luz.
+    public func cancelCalibration() {
+        guard let c = calibration else { return }
+        switch c.phase {
+        case .waitingForUnplug:
+            calibration = nil
+            log.write("CALIBRACIÓN cancelada antes de desenchufar")
+        case .discharging(let start, _):
+            stopDischarge(start: start, reason: .cancelled, at: .now)
+        case .waitingForPower:
+            finishCalibration(at: .now)
+        }
+    }
+
+    private func calibrationStep(_ s: UPSStatus, at now: Date) {
+        guard var c = calibration else { return }
+        switch c.phase {
+        case .waitingForUnplug(let deadline):
+            if s.onBattery {
+                c.phase = .discharging(start: now, deadline: now.addingTimeInterval(Double(c.maxMinutes) * 60))
+                c.samples = [CalibrationSample(t: 0, volts: s.batteryVoltage, load: s.loadPercent)]
+                calibration = c
+                log.write("CALIBRACIÓN: UPS en batería, registrando la descarga")
+            } else if now >= deadline {
+                calibration = nil
+                log.write("CALIBRACIÓN cancelada: no se desenchufó la UPS a tiempo")
+                record(.calibrationAbandoned)
+            }
+
+        case .discharging(let start, let deadline):
+            guard s.onBattery else {
+                // Se enchufó antes de terminar (o volvió la luz): se guarda lo medido.
+                c.phase = .waitingForPower(start: start, stopped: now, reason: .powerRestored)
+                calibration = c
+                finishCalibration(at: now)
+                return
+            }
+            c.samples.append(CalibrationSample(t: now.timeIntervalSince(start), volts: s.batteryVoltage, load: s.loadPercent))
+            calibration = c
+            let below = c.samples.suffix(Calibration.floorReadings)
+            let reachedFloor = below.count == Calibration.floorReadings && below.allSatisfy { $0.volts <= Calibration.floorVoltage }
+            if s.batteryLow { stopDischarge(start: start, reason: .upsLowBattery, at: now) }
+            else if reachedFloor { stopDischarge(start: start, reason: .targetVoltage, at: now) }
+            else if now >= deadline { stopDischarge(start: start, reason: .timeLimit, at: now) }
+
+        case .waitingForPower:
+            if !s.onBattery { finishCalibration(at: now) }
+        }
+    }
+
+    private func stopDischarge(start: Date, reason: CalibrationStopReason, at now: Date) {
+        guard var c = calibration else { return }
+        c.phase = .waitingForPower(start: start, stopped: now, reason: reason)
+        calibration = c
+        engine.policy = effectivePolicy   // vuelven los umbrales de la política
+        log.write(String(format: "CALIBRACIÓN: descarga terminada (%@) a los %@, batería %.2f V. Volver a enchufar la UPS",
+                         reason.description, now.timeIntervalSince(start).durationText, c.samples.last?.volts ?? 0))
+        record(.calibrationStopped(reason))
+    }
+
+    private func finishCalibration(at now: Date) {
+        guard let c = calibration, case .waitingForPower(let start, let stopped, let reason) = c.phase else { return }
+        calibration = nil
+        let rec = CalibrationRecord(start: start, end: stopped, voltageBefore: c.voltageBefore,
+                                    samples: c.samples, stopReason: reason)
+        history?.record(calibration: rec)
+        lastCalibration = rec
+        if let fit = rec.fit {
+            log.write(String(format: "CALIBRACIÓN guardada: %@, %d lecturas, %.2f→%.2f V, %.4f V/min con ~%.0f W",
+                             rec.duration.durationText, rec.samples.count, rec.samples.first?.volts ?? 0,
+                             rec.voltageMin, fit.slope, rec.averageWatts))
+        } else {
+            log.write("CALIBRACIÓN guardada: \(rec.duration.durationText), datos insuficientes para la pendiente")
+        }
+        record(.calibrationFinished(rec))
     }
 
     // MARK: Eventos
@@ -467,8 +648,9 @@ public actor MonitorCore {
         for event in monitorEvents {
             switch event {
             case .outageConfirmed(let since):
-                history?.outageStarted(at: since)
-                log.write("CORTE de luz confirmado")
+                let calibrating = calibration != nil
+                history?.outageStarted(at: since, calibration: calibrating)
+                log.write(calibrating ? "CORTE de luz confirmado (desenchufe de la calibración)" : "CORTE de luz confirmado")
             case .powerRestored(let duration, let cancelled):
                 history?.outageEnded(at: .now)
                 log.write("VOLVIÓ la luz tras \(duration.durationText)" + (cancelled ? " (apagado cancelado)" : ""))

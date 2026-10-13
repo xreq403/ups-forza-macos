@@ -253,9 +253,17 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
 - [x] Microcortes (2026-10-13): lecturas en batería que no llegaron a confirmarse como corte (vuelve la luz antes de la 2.ª lectura). Se registran en el historial (lista, tabla por día, CSV y "+ N microcortes" en el resumen), sin notificar ni afectar el apagado
 
 ### Fase 3 — Extras
-- [ ] Estimación de autonomía por la pendiente del voltaje
-- [ ] Asistente para la prueba de descarga y la calibración de la curva
-- [ ] Widget (escritorio o Centro de Control)
+- [x] Estimación de autonomía (2026-10-13): con la última calibración válida, durante un corte se extrapola la pendiente escalada por el consumo promedio del corte (`Autonomy.estimate`, en el snapshot como `autonomy`). Durante la caída inicial se toma como mucho el voltaje de batería llena. Límite: el voltaje del % mínimo de la política (inversa de la curva) o 23,6 V. Si hay umbral de % o de tiempo, se muestra "Apagado en ~N min" (el menor); si no, "Quedan ~N min (hasta 23,6 V)". Aparece en el popover y en la notificación del corte.
+  - Primera calibración real: 30 min, ~62 W, 26,12 → 24,59 V, 0,026 V/min, ~68 min hasta 23,6 V.
+- [x] Recarga medida (2026-10-13): tras un corte el popover muestra el % estimado y "completa en ~N". Se da por llena con la flotación estable (≥ 27,0 V, 10 min, sin subir), no al pasar 26,8 V. Cada recarga se guarda en el historial y el ritmo del cargador sale del promedio de las últimas 3 (si no, 12 %/h típico). Ver spec §3.6.
+- [x] Asistente de calibración de autonomía (2026-10-13). La UPS rechaza `T01` (`N`), así que la descarga se hace desenchufando la UPS:
+  - **Flujo:** Ajustes → UPS → *Calibrar…* → desenchufar (5 min para hacerlo) → registro de cada lectura → se detiene en 23,6 V, con batería baja de la UPS o al cumplir la duración máxima (15/30/60/90 min) → aviso para volver a enchufar → se guarda al volver la luz. Se puede detener antes; lo medido se guarda igual.
+  - **Lo lleva `MonitorCore`** (daemon o local), así que sigue aunque se cierre la hoja. Estado en el snapshot (`CalibrationState`), eventos `calibrationStopped`, `calibrationFinished` y `calibrationAbandoned`, y XPC `startCalibration` y `cancelCalibration`.
+  - **Seguridad:** durante la descarga se suspenden los umbrales de % y de tiempo, y sigue el de batería baja de la UPS. Al terminar vuelven todos: si no se enchufa la UPS, la Mac se apaga como en un corte. Solo arranca con la batería llena (no recargando).
+  - **Resultado (`CalibrationRecord`, en el historial, se conserva siempre):** lecturas, pendiente (recta por mínimos cuadrados desde los 2 min, mínimo 5 min de datos), consumo promedio y minutos estimados hasta 23,6 V. El desenchufe queda marcado en el historial y no cuenta como corte ni notifica.
+  - **Límite:** sin agotar la batería no se mide la capacidad total; la curva de % sigue siendo la del spec.
+  - [x] Primera calibración real (2026-10-13)
+- ~~Widget~~: descartado, el panel en vivo alcanza
 
 **Fuera de alcance:** SNMP o red, varias UPS, servidor NUT y App Store.
 
@@ -305,4 +313,5 @@ tail -f /Library/Logs/UPSForza/ups-forza.log               # registro del daemon
 | Arquitectura del daemon | Dueño del monitoreo; la app es la UI | Tomada |
 | Firma | Apple Development, equipo `L77R5X2WV6` | Tomada |
 | Margen antes de forzar el apagado | 90 s | Tomada |
-| Calibración de la curva | Curva del spec | Pendiente: prueba de descarga de 10–15 min |
+| Calibración | Pendiente de descarga medida desenchufando la UPS; la curva de % queda la del spec | Tomada |
+| Widget | No, el panel en vivo alcanza | Tomada |

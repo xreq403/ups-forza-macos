@@ -16,6 +16,8 @@ protocol MonitorBackend: AnyObject, Sendable {
     func setAutoRestart(_ on: Bool) async throws
     func runBatteryTest() async throws -> BatteryTestResponse
     func series(_ range: SeriesRange) async throws -> [SeriesPoint]
+    func startCalibration(maxMinutes: Int) async throws -> CalibrationResponse
+    func cancelCalibration() async throws
 }
 
 /// Historial de la app en modo local (sin daemon).
@@ -84,6 +86,10 @@ final class LocalBackend: MonitorBackend {
     func powerSettings() async throws -> SystemPowerSettings { PowerManagement.current() }
     func runBatteryTest() async throws -> BatteryTestResponse { await core.runBatteryTest(trigger: .manual) }
     func series(_ range: SeriesRange) async throws -> [SeriesPoint] { await core.series(range) }
+    func startCalibration(maxMinutes: Int) async throws -> CalibrationResponse {
+        await core.startCalibration(maxMinutes: maxMinutes)
+    }
+    func cancelCalibration() async throws { await core.cancelCalibration() }
     func setAutoRestart(_ on: Bool) async throws { throw PowerManagementError.notRoot }
 }
 
@@ -168,6 +174,19 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
             }
         }
         return try DaemonIdentity.jsonDecoder.decode([SeriesPoint].self, from: data)
+    }
+
+    func startCalibration(maxMinutes: Int) async throws -> CalibrationResponse {
+        let data: Data = try await call { proxy, done in
+            proxy.startCalibration(maxMinutes: maxMinutes) { data in
+                done(data.map { .success($0) } ?? .failure(DaemonBackendError.badReply))
+            }
+        }
+        return try DaemonIdentity.jsonDecoder.decode(CalibrationResponse.self, from: data)
+    }
+
+    func cancelCalibration() async throws {
+        try await call { proxy, done in proxy.cancelCalibration { done(.success(())) } }
     }
 
     func mergeHistory(_ jsonl: Data) async throws -> Int {

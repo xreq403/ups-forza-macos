@@ -30,6 +30,7 @@ Esta app habla directamente con la UPS. Muestra su estado en la barra de menús,
 - **Alarma sonora:** se activa o silencia desde el panel o desde Ajustes, y se vuelve a aplicar cada vez que la app inicia o la UPS se reconecta.
 - **Arranque automático** al iniciar sesión.
 - **Test de batería:** comprueba que las baterías sostienen la carga (~6 s en batería), con referencia de salud, aviso de desgaste y test automático opcional.
+- **Calibración de autonomía:** asistente que mide cómo baja la batería con tu consumo real (desenchufando la UPS) y estima los minutos hasta el mínimo seguro.
 - **Panel en vivo:** voltaje de la red, batería y consumo de la última hora, 6 h o 24 h, con los cortes sombreados.
 - **Historial de la red:** cortes de luz y activaciones del AVR, voltaje de la red por día, gráficos y exportación a CSV.
 - **Servicio en segundo plano (daemon root):** vigila la UPS aunque no haya sesión abierta y fuerza el apagado si una app lo bloquea.
@@ -76,6 +77,8 @@ swift run upsctl --loop 3        # refresca cada 3 s
 swift run upsctl --json --loop 10 | tee descarga.jsonl   # registro con hora
 swift run upsctl beeper off      # silencia la alarma (on para activarla)
 swift run upsctl raw M           # envía un comando y muestra la respuesta cruda
+swift run upsctl battery-test    # test rápido de batería (T), con diagnóstico
+swift run upsctl discharge-probe # ¿admite la UPS el test por tiempo (T01) y CT?
 ```
 
 ```
@@ -159,9 +162,8 @@ cd UPSKit && swift test          # tests sin Xcode
   - dashboard con gráficos en vivo,
   - controles de test de batería y apagado de la UPS.
 - **Fase 3 — Extras:**
-  - estimación de autonomía,
-  - asistente de calibración de la batería,
-  - widget.
+  - ✅ asistente de calibración de autonomía,
+  - ✅ estimación de autonomía durante un corte.
 
 El detalle está en [PLAN.md](PLAN.md).
 

@@ -162,6 +162,10 @@ NUT acepta para el retardo de apagado un rango de 12 a 540 segundos.
 - La salida pasa al inversor (216–222 V) y la batería cae de 27,29 a **26,00 V**. Vuelve sola a la red, sin batería baja ni falla.
 - **Referencia de salud:** ~26,0 V al final del test con baterías sanas y ~6 % de consumo. Una caída mayor en tests futuros, con el mismo consumo, indica desgaste.
 
+**Prueba de `T01` y `CT` (2026-10-13, con luz):** `upsctl discharge-probe`
+- La UPS respondió **`N`** a `T01` (test de descarga de 1 minuto) y no marcó b2.
+- **Conclusión: la NT-2402PRO solo admite el test rápido `T`.** No hay test por tiempo ni hasta batería baja (`TL`), así que la calibración de autonomía se hace desenchufando la UPS de la pared.
+
 **Prueba de `S09` (2026-10-13, con luz):**
 - La UPS respondió **`N`** (rechazado) y no activó el bit b1 (*Shutdown Active*, confirmado en NUT como el bit 44 de la cadena de estado).
 - `C` no tuvo efecto visible porque no había nada programado.
@@ -228,7 +232,9 @@ Curva actual, interpolada linealmente y válida para carga ligera (< 20 %):
 | ≤ 21,0 V | 0 |
 
 - Con luz se informa 100 %. Si el voltaje está por debajo de 26,8 V, se marca como "recargando".
-- **Es solo orientativa.** Hace falta una prueba de descarga más larga, de 10 a 15 minutos, para calibrarla y estimar la autonomía real.
+- **Durante la recarga tras un corte** (2026-10-13) el voltaje del cargador no sirve para el %: se parte del % al terminar el corte y se suma un ritmo en % por hora, con tope de 99 %. La recarga termina cuando el voltaje se mantiene **≥ 27,0 V durante 10 min sin subir más de 0,03 V** (flotación medida: 27,1–27,3 V); no al pasar 26,8 V, porque el voltaje se acerca a la flotación bastante antes de que la batería esté llena. Cada recarga completa se guarda (`RechargeRecord`) y el ritmo pasa a ser el promedio de las últimas 3 medidas (descarga ≥ 10 % y recarga ≥ 20 min); sin mediciones se usa ~12 %/h (≈ 90 % en 7–8 h, típico). Los microcortes (≥ 98 %) no inician una recarga. Tras reiniciar el monitor se retoma el último corte del historial si terminó hace menos de 24 h y su recarga no se registró.
+- **Es solo orientativa.** Hace falta una prueba de descarga más larga para calibrarla y estimar la autonomía real.
+- **Calibración de autonomía (implementada):** asistente en Ajustes → UPS. El usuario desenchufa la UPS; se registran voltaje y consumo en cada lectura hasta 23,6 V, batería baja de la UPS o la duración máxima (15–90 min), y se guarda al volver la luz. Se descarta la caída inicial (2 min, pérdida del voltaje del cargador) y se ajusta una recta: pendiente en V/min con el consumo medido y minutos estimados hasta 23,6 V. No mide la capacidad total, porque no se agota la batería, así que la curva de % no cambia.
 
 ---
 
@@ -312,7 +318,7 @@ El ícono en la barra de menús con el estado y el % ya está implementado.
 - [x] Alarma sonora: configurable desde la app (`Q` probado).
 - [ ] ¿Apagar también la UPS tras apagar la Mac (`S<n>`)? ¿Con qué retardo?
 - [x] Probar el apagado real de la Mac desde la app (2026-10-13: funcionó).
-- [ ] Hacer una prueba de descarga de 10 a 15 minutos para calibrar la curva y medir la autonomía.
+- [x] Asistente de calibración de autonomía (descarga desenchufando la UPS; `T<n>` no está soportado). Falta hacer la primera prueba real.
 - [ ] Probar en el equipo real los comandos de control `T`, `C` y `S`.
 - [ ] Modelo de Mac: si es portátil, tiene batería propia y eso cambia la urgencia del apagado.
 

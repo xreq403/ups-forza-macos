@@ -350,7 +350,7 @@ private struct BinnedBarChart: View {
 // MARK: - Episodios
 
 private struct Episode: Identifiable {
-    enum Kind { case outage, avr, batteryTest, microOutage }
+    enum Kind { case outage, avr, batteryTest, microOutage, calibration, recharge }
     let id: UUID
     let kind: Kind
     let start: Date
@@ -373,7 +373,8 @@ private struct EpisodeList: View {
     let snapshot: HistorySnapshot
 
     private var episodes: [Episode] {
-        let outages = snapshot.outages.map { o in
+        // El desenchufe de una calibración se muestra como la calibración.
+        let outages = snapshot.outages.filter { !$0.isCalibration }.map { o in
             var parts: [String] = []
             if let v = o.minBatteryVoltage, let p = o.minBatteryPercent {
                 parts.append(String(format: "Batería mín. %.2f V (%d %%)", v, p))
@@ -425,7 +426,25 @@ private struct EpisodeList: View {
                     detail: m.readings == 1 ? "1 lectura en batería" : "\(m.readings) lecturas en batería",
                     imported: false)
         }
-        return (outages + avr + tests + micro).sorted { $0.start > $1.start }
+        let calibrations = snapshot.calibrations.map { c in
+            var detail = c.stopReason.description
+            detail += String(format: " · %.2f → %.2f V · consumo ~%.0f W", c.samples.first?.volts ?? c.voltageBefore,
+                             c.voltageMin, c.averageWatts)
+            if let fit = c.fit, let minutes = c.projectedMinutes(to: c.floorVoltage) {
+                detail += String(format: " · %.3f V/min · ~%d min hasta %.1f V", fit.slope, Int(minutes.rounded()), c.floorVoltage)
+            } else {
+                detail += " · sin datos suficientes"
+            }
+            return Episode(id: c.id, kind: .calibration, start: c.start, end: c.end, inProgress: false,
+                           detail: detail, imported: false, tint: c.isUsable ? .batteryGreen : .warningAmber)
+        }
+        let recharges = snapshot.recharges.map { r in
+            Episode(id: r.id, kind: .recharge, start: r.start, end: r.end, inProgress: false,
+                    detail: String(format: "%d %% → 100 %% · %.1f %% por hora", r.startPercent, r.percentPerHour)
+                        + (r.isUsable ? "" : " · no se usa para el ritmo (recarga corta)"),
+                    imported: false, tint: .batteryGreen)
+        }
+        return (outages + avr + tests + micro + calibrations + recharges).sorted { $0.start > $1.start }
     }
 
     var body: some View {
@@ -455,6 +474,8 @@ private struct EpisodeRow: View {
         case .avr: "waveform.path.ecg"
         case .batteryTest: "minus.plus.batteryblock"
         case .microOutage: "bolt.slash"
+        case .calibration: "gauge.with.needle"
+        case .recharge: "bolt.batteryblock"
         }
     }
 
@@ -464,6 +485,8 @@ private struct EpisodeRow: View {
         case .avr: "AVR activo"
         case .batteryTest: "Test de batería"
         case .microOutage: "Microcorte"
+        case .calibration: "Calibración de autonomía"
+        case .recharge: "Recarga de la batería"
         }
     }
 
@@ -589,7 +612,7 @@ enum HistoryCSV {
         var rows = ["tipo,inicio,fin,duracion_s,bateria_min_v,bateria_min_pct,consumo_max_pct,apagado,avr_modo,entrada_min_v,entrada_max_v,salida_min_v,salida_max_v,importado,resultado,bateria_antes_v"]
         for o in snap.outages.sorted(by: { $0.start < $1.start }) {
             rows.append([
-                "corte", stamp(o.start), stamp(o.end),
+                o.isCalibration ? "desenchufe_calibracion" : "corte", stamp(o.start), stamp(o.end),
                 o.end.map { String(Int($0.timeIntervalSince(o.start))) } ?? "",
                 num(o.minBatteryVoltage, 2), o.minBatteryPercent.map(String.init) ?? "",
                 o.maxLoadPercent.map(String.init) ?? "",
@@ -618,6 +641,22 @@ enum HistoryCSV {
                 String(Int(t.duration)), num(t.voltageMin, 2), "", String(t.maxLoadPercent),
                 "", "", "", "", "", "", "no",
                 "\(t.outcome.rawValue)/\(t.health.rawValue)", num(t.voltageBefore, 2),
+            ].joined(separator: ","))
+        }
+        for c in snap.calibrations.sorted(by: { $0.start < $1.start }) {
+            rows.append([
+                "calibracion", stamp(c.start), stamp(c.end), String(Int(c.duration)),
+                num(c.voltageMin, 2), "", String(Int(c.averageLoad.rounded())),
+                "", "", "", "", "", "", "no",
+                quoted(c.stopReason.description + (c.fit.map { String(format: " · %.4f V/min", $0.slope) } ?? "")),
+                num(c.voltageBefore, 2),
+            ].joined(separator: ","))
+        }
+        for r in snap.recharges.sorted(by: { $0.start < $1.start }) {
+            rows.append([
+                "recarga", stamp(r.start), stamp(r.end), String(Int(r.duration)),
+                "", String(r.startPercent), "", "", "", "", "", "", "", "no",
+                quoted(String(format: "%.1f %%/h", r.percentPerHour)), "",
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n") + "\n"

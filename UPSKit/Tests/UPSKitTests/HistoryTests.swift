@@ -29,7 +29,7 @@ struct LogImporterTests {
             case .outage(let r): o.append(r)
             case .avr(let r): a.append(r)
             case .day(let s): d.append(s)
-            case .batteryTest, .microOutage: break
+            case .batteryTest, .microOutage, .calibration, .recharge: break
             }
         }
         return (o.sorted { $0.start < $1.start }, a, d.sorted { $0.day < $1.day })
