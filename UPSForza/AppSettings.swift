@@ -9,6 +9,7 @@ enum SettingsKey {
     static let maxMinutesOnBattery = "maxMinutesOnBattery"
     static let warningSeconds = "warningSeconds"
     static let beeperEnabled = "beeperEnabled"
+    static let batteryTestIntervalDays = "batteryTestIntervalDays"
 }
 
 enum AppSettings {
@@ -21,6 +22,7 @@ enum AppSettings {
             SettingsKey.maxMinutesOnBattery: policy.maxMinutesOnBattery,
             SettingsKey.warningSeconds: policy.warningSeconds,
             SettingsKey.beeperEnabled: true,
+            SettingsKey.batteryTestIntervalDays: 0,
         ])
     }
 
@@ -33,6 +35,7 @@ enum AppSettings {
         s.pollInterval = pollInterval
         s.policy = policy
         s.beeperEnabled = beeperEnabled
+        s.batteryTestIntervalDays = UserDefaults.standard.integer(forKey: SettingsKey.batteryTestIntervalDays)
         return s
     }
 

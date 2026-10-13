@@ -5,6 +5,7 @@
 //   swift run upsctl --loop 3     refresca cada 3 s
 //   swift run upsctl raw M        envía un comando y muestra la respuesta cruda
 //   swift run upsctl beeper off   desactiva la alarma sonora (on para activarla)
+//   swift run upsctl battery-test envía T (test rápido de batería) y sigue el estado 30 s
 
 import Foundation
 import UPSKit
@@ -31,11 +32,59 @@ func printStatus(_ s: UPSStatus) {
     }
 }
 
+/// Diagnóstico del comando `T`: ¿lo acepta la UPS?, ¿marca b2?, ¿pasa a batería (b7)?,
+/// ¿cuánto cae el voltaje?, ¿vuelve sola a la red?
+func runBatteryTest() throws {
+    let before = try ups.statusSync()
+    guard !before.onBattery else { fail("Hay un corte de luz en curso: no se envía T.") }
+    print("Antes: bits=\(before.statusBitsString) bat=\(String(format: "%.2f", before.batteryVoltage)) V "
+        + "consumo=\(before.loadPercent)% salida=\(before.outputVoltage) V")
+    print("Enviando T…")
+    let reply: String
+    do {
+        let r = try ups.transport.send("T", expectReply: true, timeout: 1.5)
+        reply = "«" + String(decoding: r.filter { $0 != 0x0D && $0 != 0x00 }, as: UTF8.self) + "»"
+    } catch TransportError.timeout {
+        reply = "ninguna"
+    }
+    print("Respuesta a T: \(reply)\n")
+    print("  t    bits      b2 test  b7 batería  bat V   consumo  salida")
+
+    var sawTest = false, sawBattery = false, sawLow = false, sawFault = false
+    var minBattery = before.batteryVoltage
+    var endedAt: Int?
+    for t in 1...30 {
+        Thread.sleep(forTimeInterval: 1)
+        guard let s = try? ups.statusSync() else { print(String(format: "%3d s  (sin lectura)", t)); continue }
+        sawTest = sawTest || s.testInProgress
+        sawBattery = sawBattery || s.onBattery
+        sawLow = sawLow || s.batteryLow
+        sawFault = sawFault || s.upsFault
+        minBattery = min(minBattery, s.batteryVoltage)
+        if (sawTest || sawBattery) && !s.testInProgress && !s.onBattery && endedAt == nil { endedAt = t }
+        print(String(format: "%3d s  %@  %@       %@          %5.2f   %3d%%     %5.1f V",
+                     t, s.statusBitsString, s.testInProgress ? "sí" : "no", s.onBattery ? "sí" : "no",
+                     s.batteryVoltage, s.loadPercent, s.outputVoltage))
+        if let endedAt, t >= endedAt + 3 { break }
+    }
+
+    print("\nResumen:")
+    print("  Respuesta a T:            \(reply)")
+    print("  Bit de test (b2):         \(sawTest ? "sí" : "no")")
+    print("  Pasó a batería (b7):      \(sawBattery ? "sí" : "no")")
+    print("  Batería baja / falla:     \(sawLow ? "sí" : "no") / \(sawFault ? "sí" : "no")")
+    print("  Voltaje mínimo:           \(String(format: "%.2f V (antes %.2f V, caída %.2f V)", minBattery, before.batteryVoltage, before.batteryVoltage - minBattery))")
+    print("  Volvió a la red:          \(endedAt.map { "sí, a los \($0) s" } ?? (sawTest || sawBattery ? "no en 30 s" : "—"))")
+    let accepted = sawTest || sawBattery
+    print("  Conclusión:               \(accepted ? "la UPS admite el test de batería" : "la UPS no hizo el test (no lo admite o lo ignoró)")")
+}
+
 var args = Array(CommandLine.arguments.dropFirst())
 var json = false
 var loop: Double?
 var raw: String?
 var beeper: Bool?
+var batteryTest = false
 
 while !args.isEmpty {
     let a = args.removeFirst()
@@ -55,8 +104,9 @@ while !args.isEmpty {
         default: fail("beeper requiere on u off")
         }
         args.removeFirst()
+    case "battery-test": batteryTest = true
     case "-h", "--help":
-        print("Uso: upsctl [--json] [--loop SEG] | upsctl raw COMANDO | upsctl beeper on|off")
+        print("Uso: upsctl [--json] [--loop SEG] | upsctl raw COMANDO | upsctl beeper on|off | upsctl battery-test")
         exit(0)
     default: fail("Argumento desconocido: \(a)")
     }
@@ -78,6 +128,10 @@ do {
         let reply = try ups.rawSync(raw)
         print("hex  : \(reply.hexString)")
         print("ascii: \(String(decoding: reply.map { (0x20...0x7e).contains($0) ? $0 : UInt8(ascii: ".") }, as: UTF8.self))")
+        exit(0)
+    }
+    if batteryTest {
+        try runBatteryTest()
         exit(0)
     }
     if let beeper {

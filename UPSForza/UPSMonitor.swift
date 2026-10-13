@@ -27,6 +27,8 @@ final class UPSMonitor {
     private(set) var backendKind: BackendKind = .none
     /// El daemon está activo pero no responde.
     private(set) var backendError: String?
+    private(set) var batteryTestRunning = false
+    private(set) var lastBatteryTest: BatteryTestRecord?
     /// Cambia al borrar el historial, para que las vistas lo recarguen.
     private(set) var historyRevision = 0
 
@@ -87,6 +89,22 @@ final class UPSMonitor {
         try await backend.clearHistory(includeLogs: includeLogs)
         if includeLogs && backendKind == .daemon { EventLog(url: EventLog.userLogURL).clear() }
         historyRevision += 1
+    }
+
+    /// Test rápido de batería. El resultado llega también como evento.
+    func runBatteryTest() async -> BatteryTestResponse {
+        guard let backend else { return BatteryTestResponse(error: "El monitor no está listo.") }
+        batteryTestRunning = true
+        do {
+            let response = try await backend.runBatteryTest()
+            if let record = response.record { lastBatteryTest = record }
+            batteryTestRunning = false
+            historyRevision += 1
+            return response
+        } catch {
+            batteryTestRunning = false
+            return BatteryTestResponse(error: String(describing: error))
+        }
     }
 
     func powerSettings() async throws -> SystemPowerSettings {
@@ -184,6 +202,8 @@ final class UPSMonitor {
         beeperSyncing = snap.beeperSyncing
         beeperSyncError = snap.beeperSyncError
         logURL = URL(fileURLWithPath: snap.logPath)
+        batteryTestRunning = snap.batteryTestRunning
+        lastBatteryTest = snap.lastBatteryTest
         for recorded in snap.events { handle(recorded, link: snap.link) }
         lastEventID = snap.lastEventID
         if !phase.isWarning { warningPanel.close() }
@@ -233,6 +253,21 @@ final class UPSMonitor {
 
         case .shutdownForced:
             notifier.post("Apagado forzado", "El apagado ordenado no se completó; el servicio apaga la Mac.", urgent: true)
+
+        case .batteryTestFinished(let t):
+            // Solo avisa si algo salió mal (el resultado normal se ve en el popover).
+            switch (t.outcome, t.health) {
+            case (.failed, _):
+                notifier.post("Test de batería: falla", "La UPS indicó batería baja o falla durante el test. Conviene revisar o cambiar las baterías.", urgent: true)
+            case (.passed, .degrading):
+                notifier.post("Test de batería: desgaste",
+                              String(format: "La batería cayó a %.2f V (referencia %.2f V). Se está desgastando.",
+                                     t.voltageMin, t.referenceVoltage ?? 0))
+            case (.notStarted, _) where t.trigger == .scheduled:
+                notifier.post("Test de batería", "La UPS no inició el test automático.")
+            default:
+                break
+            }
         }
     }
 

@@ -29,6 +29,7 @@ Esta app habla directamente con la UPS. Muestra su estado en la barra de menús,
 - **Desconexión segura:** si se pierde la comunicación, por ejemplo al desconectar el dock, avisa pero **no apaga la Mac**.
 - **Alarma sonora:** se activa o silencia desde el panel o desde Ajustes, y se vuelve a aplicar cada vez que la app inicia o la UPS se reconecta.
 - **Arranque automático** al iniciar sesión.
+- **Test de batería:** comprueba que las baterías sostienen la carga (~6 s en batería), con referencia de salud, aviso de desgaste y test automático opcional.
 - **Historial de la red:** cortes de luz y activaciones del AVR, voltaje de la red por día, gráficos y exportación a CSV.
 - **Servicio en segundo plano (daemon root):** vigila la UPS aunque no haya sesión abierta y fuerza el apagado si una app lo bloquea.
 - **Registro** de eventos y lecturas en `/Library/Logs/UPSForza/ups-forza.log` (con el servicio) o `~/Library/Logs/ups-forza.log` (sin él).

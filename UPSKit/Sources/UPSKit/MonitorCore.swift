@@ -9,6 +9,8 @@ public protocol UPSDevice: Sendable {
     func status() async throws -> UPSStatus
     func protocolVariant() async throws -> String
     func setBeeper(enabled: Bool) async throws -> Bool
+    /// `T`: test rápido de batería (~6 s alimentando desde la batería).
+    func startBatteryTest() async throws
 }
 
 extension ForzaUPS: UPSDevice {
@@ -21,6 +23,10 @@ extension ForzaUPS: UPSDevice {
         transport.stop()
     }
 
+    public func startBatteryTest() async throws {
+        try await batteryTest()
+    }
+
 }
 
 // MARK: - Modelo compartido con la app (también viaja por XPC como JSON)
@@ -29,13 +35,15 @@ public struct MonitorSettings: Codable, Sendable, Equatable {
     public var pollInterval = 5
     public var policy = ShutdownPolicy()
     public var beeperEnabled = true
+    /// Test de batería automático cada N días (0 = desactivado).
+    public var batteryTestIntervalDays = 0
 
     public init() {}
 
     // Decodificación tolerante: un settings.json de una versión anterior (sin los
     // campos nuevos) tiene que seguir leyéndose, no volver a los valores por defecto.
     private enum CodingKeys: String, CodingKey {
-        case pollInterval, policy, beeperEnabled
+        case pollInterval, policy, beeperEnabled, batteryTestIntervalDays
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,6 +52,8 @@ public struct MonitorSettings: Codable, Sendable, Equatable {
         pollInterval = try c.decodeIfPresent(Int.self, forKey: .pollInterval) ?? d.pollInterval
         policy = try c.decodeIfPresent(ShutdownPolicy.self, forKey: .policy) ?? d.policy
         beeperEnabled = try c.decodeIfPresent(Bool.self, forKey: .beeperEnabled) ?? d.beeperEnabled
+        batteryTestIntervalDays = try c.decodeIfPresent(Int.self, forKey: .batteryTestIntervalDays)
+            ?? d.batteryTestIntervalDays
     }
 }
 
@@ -60,6 +70,19 @@ public enum CoreEvent: Codable, Sendable, Equatable {
     case shutdownIncomplete
     /// El daemon forzó el apagado (`shutdown -h now`).
     case shutdownForced(reason: ShutdownReason)
+    /// Terminó un test de batería (manual o automático).
+    case batteryTestFinished(BatteryTestRecord)
+}
+
+/// Respuesta a un pedido de test de batería: el resultado, o por qué no se hizo.
+public struct BatteryTestResponse: Codable, Sendable {
+    public var record: BatteryTestRecord?
+    public var error: String?
+
+    public init(record: BatteryTestRecord? = nil, error: String? = nil) {
+        self.record = record
+        self.error = error
+    }
 }
 
 public struct RecordedEvent: Codable, Sendable, Equatable {
@@ -83,6 +106,8 @@ public struct MonitorSnapshot: Codable, Sendable {
     /// Id del último evento registrado; pedir el próximo snapshot desde aquí.
     public var lastEventID: Int
     public var logPath: String
+    public var batteryTestRunning: Bool
+    public var lastBatteryTest: BatteryTestRecord?
 }
 
 /// Qué hacer si, tras ordenar el apagado, la Mac sigue encendida.
@@ -167,6 +192,7 @@ public actor MonitorCore {
         loopTask = Task {
             while !Task.isCancelled {
                 await pollOnce()
+                await runScheduledBatteryTestIfDue()
                 // Espera el intervalo en pasos de 1 s para que la cuenta regresiva avance a tiempo.
                 for _ in 0..<max(settings.pollInterval, 1) {
                     try? await Task.sleep(for: .seconds(1))
@@ -221,7 +247,9 @@ public actor MonitorCore {
             settings: settings,
             events: eventID < 0 ? [] : events.filter { $0.id > eventID },
             lastEventID: nextEventID - 1,
-            logPath: log.url.path
+            logPath: log.url.path,
+            batteryTestRunning: batteryTestRunning,
+            lastBatteryTest: lastBatteryTest ?? history?.lastBatteryTest
         )
     }
 
@@ -263,12 +291,14 @@ public actor MonitorCore {
             lastUpdate = .now
             lastError = nil
             link = .connected
+            if s.onBattery { onlineSince = nil } else if onlineSince == nil { onlineSince = .now }
             logReading(s)
             handle(engine.ingest(s, at: .now))
             history?.ingest(s, at: .now)
             if beeperEnforced && s.beeperOn != settings.beeperEnabled { await syncBeeper() }
         } catch {
             lastError = String(describing: error)
+            onlineSince = nil
             handle(engine.ingestFailure(at: .now))
         }
     }
@@ -328,6 +358,83 @@ public actor MonitorCore {
             s.inputVoltage, s.outputVoltage, s.loadPercent, s.batteryVoltage, s.batteryPercent,
             s.frequency, s.statusBitsString
         ))
+    }
+
+    // MARK: Test de batería
+
+    private var batteryTestRunning = false
+    private var lastBatteryTest: BatteryTestRecord?
+    /// Desde cuándo hay luz y comunicación sin interrupciones (para el test automático).
+    private var onlineSince: Date?
+    private var lastScheduledAttempt: Date?
+    /// Minutos con luz estable antes de un test automático.
+    static let scheduledTestStableOnline: TimeInterval = 600
+
+    /// Test rápido de batería (`T`): la UPS alimenta ~6 s desde la batería (bit b2).
+    /// Mide el voltaje mínimo y lo compara con el primer test superado (referencia).
+    /// Solo con luz, comunicación y sin otro test o apagado en curso.
+    public func runBatteryTest(trigger: BatteryTestTrigger) async -> BatteryTestResponse {
+        guard link == .connected, let s = status else { return BatteryTestResponse(error: "La UPS no está conectada.") }
+        guard !s.onBattery else { return BatteryTestResponse(error: "Hay un corte de luz en curso.") }
+        guard case .online = engine.phase else { return BatteryTestResponse(error: "La UPS no está en funcionamiento normal con luz.") }
+        guard !batteryTestRunning, !s.testInProgress else { return BatteryTestResponse(error: "Ya hay un test en curso.") }
+        batteryTestRunning = true
+        defer { batteryTestRunning = false }
+
+        let start = Date.now
+        var rec = BatteryTestRecord(start: start, trigger: trigger, voltageBefore: s.batteryVoltage,
+                                    voltageMin: s.batteryVoltage, maxLoadPercent: s.loadPercent)
+        log.write("TEST de batería (\(trigger == .manual ? "manual" : "automático")): T")
+        do {
+            try await device.startBatteryTest()
+        } catch {
+            log.write("ERROR enviando T: \(error)")
+            return BatteryTestResponse(error: "No se pudo enviar el test: \(error)")
+        }
+
+        var sawTest = false, low = false, fault = false
+        while Date.now.timeIntervalSince(start) < 30 {
+            try? await Task.sleep(for: .seconds(1))
+            guard let r = try? await device.status() else { continue }
+            status = r
+            if r.onBattery { break }   // corte real: lo maneja el monitor
+            if r.testInProgress {
+                if !sawTest { rec.voltageMin = r.batteryVoltage }
+                sawTest = true
+                rec.voltageMin = min(rec.voltageMin, r.batteryVoltage)
+                rec.maxLoadPercent = max(rec.maxLoadPercent, r.loadPercent)
+                low = low || r.batteryLow
+                fault = fault || r.upsFault
+            } else if sawTest || Date.now.timeIntervalSince(start) > 5 {
+                break   // terminó, o la UPS no lo inició
+            }
+        }
+
+        rec.duration = Date.now.timeIntervalSince(start)
+        rec.outcome = !sawTest ? .notStarted : (low || fault ? .failed : .passed)
+        let reference = history?.referenceBatteryTest
+        rec.health = BatteryTestRecord.health(outcome: rec.outcome, voltageMin: rec.voltageMin,
+                                              load: rec.maxLoadPercent, reference: reference)
+        rec.referenceVoltage = reference?.voltageMin
+        history?.record(batteryTest: rec)
+        lastBatteryTest = rec
+        log.write(String(format: "TEST de batería: %@ · mín %.2f V (antes %.2f V, caída %.2f V) · consumo %d%% · salud %@",
+                         rec.outcome.rawValue, rec.voltageMin, rec.voltageBefore, rec.drop,
+                         rec.maxLoadPercent, rec.health.rawValue))
+        record(.batteryTestFinished(rec))
+        return BatteryTestResponse(record: rec)
+    }
+
+    /// Test automático: cada `batteryTestIntervalDays` días, con al menos 10 min de luz
+    /// estable. Un intento fallido no se repite hasta el próximo intervalo.
+    private func runScheduledBatteryTestIfDue() async {
+        let days = settings.batteryTestIntervalDays
+        guard days > 0, let since = onlineSince,
+              Date.now.timeIntervalSince(since) >= Self.scheduledTestStableOnline else { return }
+        let last = [history?.lastBatteryTest?.start, lastScheduledAttempt].compactMap { $0 }.max()
+        if let last, Date.now.timeIntervalSince(last) < Double(days) * 86_400 { return }
+        lastScheduledAttempt = .now
+        _ = await runBatteryTest(trigger: .scheduled)
     }
 
     // MARK: Eventos

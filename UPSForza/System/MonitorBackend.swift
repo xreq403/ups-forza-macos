@@ -14,6 +14,7 @@ protocol MonitorBackend: AnyObject, Sendable {
     func clearHistory(includeLogs: Bool) async throws
     func powerSettings() async throws -> SystemPowerSettings
     func setAutoRestart(_ on: Bool) async throws
+    func runBatteryTest() async throws -> BatteryTestResponse
 }
 
 // MARK: - Local (sin daemon)
@@ -47,6 +48,7 @@ final class LocalBackend: MonitorBackend {
     func history(days: Int) async throws -> HistorySnapshot { await core.history(days: days) }
     func clearHistory(includeLogs: Bool) async throws { await core.clearHistory(includeLogs: includeLogs) }
     func powerSettings() async throws -> SystemPowerSettings { PowerManagement.current() }
+    func runBatteryTest() async throws -> BatteryTestResponse { await core.runBatteryTest(trigger: .manual) }
     func setAutoRestart(_ on: Bool) async throws { throw PowerManagementError.notRoot }
 }
 
@@ -122,6 +124,15 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
 
     func clearHistory(includeLogs: Bool) async throws {
         try await call { proxy, done in proxy.clearHistory(includeLogs: includeLogs) { done(.success(())) } }
+    }
+
+    func runBatteryTest() async throws -> BatteryTestResponse {
+        let data: Data = try await call(timeout: 45) { proxy, done in
+            proxy.runBatteryTest { data in
+                done(data.map { .success($0) } ?? .failure(DaemonBackendError.badReply))
+            }
+        }
+        return try DaemonIdentity.jsonDecoder.decode(BatteryTestResponse.self, from: data)
     }
 
     func powerSettings() async throws -> SystemPowerSettings {

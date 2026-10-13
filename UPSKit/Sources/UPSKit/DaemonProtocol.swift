@@ -12,6 +12,8 @@ import Foundation
     func history(days: Int, reply: @escaping @Sendable (Data?) -> Void)
     /// Borra el historial y, si `includeLogs`, el registro del daemon.
     func clearHistory(includeLogs: Bool, reply: @escaping @Sendable () -> Void)
+    /// Test rápido de batería (`BatteryTestResponse` en JSON). Tarda ~10 s.
+    func runBatteryTest(reply: @escaping @Sendable (Data?) -> Void)
     /// Ajustes de energía de macOS (`SystemPowerSettings` en JSON).
     func powerSettings(reply: @escaping @Sendable (Data?) -> Void)
     /// Cambia `pmset autorestart`. Responde el error, o `nil` si salió bien.

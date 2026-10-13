@@ -105,27 +105,109 @@ public struct DayStats: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Test de batería
+
+public enum BatteryTestTrigger: String, Codable, Sendable {
+    case manual
+    case scheduled
+}
+
+public enum BatteryTestOutcome: String, Codable, Sendable {
+    /// La batería sostuvo la carga sin indicar batería baja ni falla.
+    case passed
+    /// La UPS indicó batería baja o falla durante el test.
+    case failed
+    /// La UPS no marcó el test (bit b2): no se hizo.
+    case notStarted
+}
+
+/// Comparación con la referencia (el primer test superado).
+public enum BatteryHealth: String, Codable, Sendable {
+    /// Primer test superado: es la referencia.
+    case reference
+    case good
+    /// Cayó claramente más que en la referencia: la batería se está desgastando.
+    case degrading
+    case bad
+    case unknown
+}
+
+/// Resultado de un test rápido de batería (`T`): ~6 s alimentando desde la batería.
+public struct BatteryTestRecord: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let start: Date
+    public var duration: TimeInterval
+    public var trigger: BatteryTestTrigger
+    public var outcome: BatteryTestOutcome
+    /// Voltaje justo antes del test (con el cargador: no refleja la carga real).
+    public var voltageBefore: Double
+    /// Voltaje mínimo durante el test: el indicador de salud.
+    public var voltageMin: Double
+    public var maxLoadPercent: Int
+    public var health: BatteryHealth
+    /// Voltaje mínimo del test de referencia, si lo había.
+    public var referenceVoltage: Double?
+
+    public var drop: Double { voltageBefore - voltageMin }
+
+    public init(id: UUID = UUID(), start: Date, duration: TimeInterval = 0, trigger: BatteryTestTrigger,
+                outcome: BatteryTestOutcome = .notStarted, voltageBefore: Double, voltageMin: Double,
+                maxLoadPercent: Int = 0, health: BatteryHealth = .unknown, referenceVoltage: Double? = nil) {
+        self.id = id
+        self.start = start
+        self.duration = duration
+        self.trigger = trigger
+        self.outcome = outcome
+        self.voltageBefore = voltageBefore
+        self.voltageMin = voltageMin
+        self.maxLoadPercent = maxLoadPercent
+        self.health = health
+        self.referenceVoltage = referenceVoltage
+    }
+
+    /// Margen respecto de la referencia a partir del cual se considera desgaste.
+    public static let degradationMargin = 0.4
+
+    /// Evalúa la salud comparando con la referencia. Solo compara si el consumo es
+    /// parecido (±5 puntos), porque con más consumo el voltaje cae más.
+    static func health(outcome: BatteryTestOutcome, voltageMin: Double, load: Int,
+                       reference: BatteryTestRecord?) -> BatteryHealth {
+        switch outcome {
+        case .failed: return .bad
+        case .notStarted: return .unknown
+        case .passed: break
+        }
+        guard let reference else { return .reference }
+        guard abs(load - reference.maxLoadPercent) <= 5 else { return .good }
+        return voltageMin < reference.voltageMin - degradationMargin ? .degrading : .good
+    }
+}
+
 /// Una línea del archivo de historial. Un mismo id (o día) puede aparecer varias
 /// veces: al cargar, la última versión gana.
 public enum HistoryLine: Codable, Sendable, Equatable {
     case outage(OutageRecord)
     case avr(AVRRecord)
     case day(DayStats)
+    case batteryTest(BatteryTestRecord)
 }
 
 public struct HistorySnapshot: Codable, Sendable {
     public var outages: [OutageRecord]
     public var avr: [AVRRecord]
     public var days: [DayStats]
+    public var batteryTests: [BatteryTestRecord]
     /// Episodios en curso (los demás sin `end` quedaron sin cerrar).
     public var currentOutageID: UUID?
     public var currentAVRID: UUID?
 
     public init(outages: [OutageRecord] = [], avr: [AVRRecord] = [], days: [DayStats] = [],
+                batteryTests: [BatteryTestRecord] = [],
                 currentOutageID: UUID? = nil, currentAVRID: UUID? = nil) {
         self.outages = outages
         self.avr = avr
         self.days = days
+        self.batteryTests = batteryTests
         self.currentOutageID = currentOutageID
         self.currentAVRID = currentAVRID
     }
@@ -147,6 +229,7 @@ final class HistoryStore {
     private var outages: [UUID: OutageRecord] = [:]
     private var avr: [UUID: AVRRecord] = [:]
     private var days: [String: DayStats] = [:]
+    private var batteryTests: [UUID: BatteryTestRecord] = [:]
     private var currentOutageID: UUID?
     private var currentAVRID: UUID?
     private var lastCheckpoint = Date.now
@@ -240,10 +323,25 @@ final class HistoryStore {
         outages = [:]
         avr = [:]
         days = [:]
+        batteryTests = [:]
         currentOutageID = nil
         currentAVRID = nil
         lastDayKey = nil
         rewrite()
+    }
+
+    func record(batteryTest t: BatteryTestRecord) {
+        batteryTests[t.id] = t
+        append(.batteryTest(t))
+    }
+
+    /// Primer test superado: la referencia de salud.
+    var referenceBatteryTest: BatteryTestRecord? {
+        batteryTests.values.filter { $0.outcome == .passed }.min { $0.start < $1.start }
+    }
+
+    var lastBatteryTest: BatteryTestRecord? {
+        batteryTests.values.max { $0.start < $1.start }
     }
 
     func importLines(_ lines: [HistoryLine]) {
@@ -257,6 +355,7 @@ final class HistoryStore {
             outages: outages.values.filter { ($0.end ?? .now) >= since }.sorted { $0.start > $1.start },
             avr: avr.values.filter { ($0.end ?? .now) >= since }.sorted { $0.start > $1.start },
             days: days.values.filter { $0.day >= sinceKey }.sorted { $0.day > $1.day },
+            batteryTests: batteryTests.values.filter { $0.start >= since }.sorted { $0.start > $1.start },
             currentOutageID: currentOutageID,
             currentAVRID: currentAVRID
         )
@@ -269,6 +368,7 @@ final class HistoryStore {
         case .outage(let r): outages[r.id] = r
         case .avr(let r): avr[r.id] = r
         case .day(let d): days[d.day] = d
+        case .batteryTest(let t): batteryTests[t.id] = t
         }
     }
 
@@ -286,6 +386,8 @@ final class HistoryStore {
         let cutoff = Date.now.addingTimeInterval(-Double(Self.retentionDays) * 86_400)
         let cutoffKey = Self.dayKey(cutoff)
         outages = outages.filter { ($0.value.end ?? $0.value.start) >= cutoff }
+        // Los tests se conservan siempre: el de referencia puede tener años.
+
         avr = avr.filter { ($0.value.end ?? $0.value.start) >= cutoff }
         days = days.filter { $0.key >= cutoffKey }
 
@@ -293,6 +395,7 @@ final class HistoryStore {
         lines += outages.values.sorted { $0.start < $1.start }.map(HistoryLine.outage)
         lines += avr.values.sorted { $0.start < $1.start }.map(HistoryLine.avr)
         lines += days.values.sorted { $0.day < $1.day }.map(HistoryLine.day)
+        lines += batteryTests.values.sorted { $0.start < $1.start }.map(HistoryLine.batteryTest)
         let encoder = JSONEncoder()
         let data = lines.compactMap { try? encoder.encode($0) }
             .reduce(into: Data()) { $0 += $1; $0 += Data("\n".utf8) }

@@ -24,7 +24,35 @@ final class FakeUPS: UPSDevice, @unchecked Sendable {
 
     func status() async throws -> UPSStatus {
         if fail { throw TransportError.notConnected }
-        return status
+        return currentStatus()
+    }
+
+    /// Test de batería simulado: b2 durante `testReadings` lecturas, con este voltaje.
+    var testVoltage = 26.0
+    var testFails = false
+    var ignoresTest = false
+    private var testReadingsLeft = 0
+    private(set) var testsStarted = 0
+
+    func startBatteryTest() async throws {
+        lock.withLock {
+            testsStarted += 1
+            if !ignoresTest { testReadingsLeft = 3 }
+        }
+    }
+
+    /// Lo que devuelve `status()`: durante el test, b2 y el voltaje del test.
+    private func currentStatus() -> UPSStatus {
+        lock.withLock {
+            var s = _status
+            if testReadingsLeft > 0 {
+                testReadingsLeft -= 1
+                s.testInProgress = true
+                s.batteryVoltage = testVoltage
+                s.batteryLow = testFails
+            }
+            return s
+        }
     }
 
     func setBeeper(enabled: Bool) async throws -> Bool {
@@ -224,5 +252,95 @@ struct PowerManagementTests {
         #expect(PowerManagement.parseAutoRestart(out) == false)
         #expect(PowerManagement.parseAutoRestart(" autorestart 1") == true)
         #expect(PowerManagement.parseAutoRestart(" autorestartatconnect 1") == nil)
+    }
+}
+
+
+struct BatteryTestTests {
+    func core(_ ups: FakeUPS, history: URL? = nil) -> MonitorCore {
+        MonitorCore(device: ups, settings: MonitorSettings(),
+                    log: EventLog(url: FileManager.default.temporaryDirectory.appending(path: "ups-forza-tests.log")),
+                    forced: .unavailable(retryAfter: 120), historyURL: history)
+    }
+
+    func online() -> UPSStatus { UPSStatus(loadPercent: 5, batteryVoltage: 27.29) }
+
+    func tempHistory() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "bt-\(UUID().uuidString).jsonl")
+    }
+
+    @Test func firstPassedTestIsReference() async throws {
+        let ups = FakeUPS()
+        ups.status = online()
+        let c = core(ups, history: tempHistory())
+        await c.pollOnce()
+        await c.pollOnce()
+        let r = try #require(await c.runBatteryTest(trigger: .manual).record)
+        #expect(r.outcome == .passed)
+        #expect(r.voltageMin == 26.0)
+        #expect(r.voltageBefore == 27.29)
+        #expect(r.health == .reference)
+        #expect(ups.testsStarted == 1)
+    }
+
+    @Test func detectsDegradationAgainstReference() async throws {
+        let ups = FakeUPS()
+        ups.status = online()
+        let c = core(ups, history: tempHistory())
+        await c.pollOnce()
+        await c.pollOnce()
+        _ = await c.runBatteryTest(trigger: .manual)          // referencia: 26,0 V
+        ups.testVoltage = 25.4                                 // 0,6 V peor
+        let r = try #require(await c.runBatteryTest(trigger: .manual).record)
+        #expect(r.health == .degrading)
+        #expect(r.referenceVoltage == 26.0)
+    }
+
+    @Test func lowBatteryDuringTestFails() async throws {
+        let ups = FakeUPS()
+        ups.status = online()
+        ups.testFails = true
+        let c = core(ups)
+        await c.pollOnce()
+        await c.pollOnce()
+        let r = try #require(await c.runBatteryTest(trigger: .manual).record)
+        #expect(r.outcome == .failed)
+        #expect(r.health == .bad)
+    }
+
+    @Test func ignoredTestIsNotStarted() async throws {
+        let ups = FakeUPS()
+        ups.status = online()
+        ups.ignoresTest = true
+        let c = core(ups)
+        await c.pollOnce()
+        await c.pollOnce()
+        let r = try #require(await c.runBatteryTest(trigger: .manual).record)
+        #expect(r.outcome == .notStarted)
+    }
+
+    @Test func refusedOnBattery() async {
+        let ups = FakeUPS()
+        ups.status = UPSStatus(batteryVoltage: 25.0, onBattery: true)
+        let c = core(ups)
+        await c.pollOnce()
+        let resp = await c.runBatteryTest(trigger: .manual)
+        #expect(resp.record == nil)
+        #expect(resp.error != nil)
+        #expect(ups.testsStarted == 0)
+    }
+
+    @Test func testIsRecordedInHistoryAndEvents() async throws {
+        let ups = FakeUPS()
+        ups.status = online()
+        let url = tempHistory()
+        let c = core(ups, history: url)
+        await c.pollOnce()
+        await c.pollOnce()
+        _ = await c.runBatteryTest(trigger: .manual)
+        #expect(await c.history(days: 1).batteryTests.count == 1)
+        let snap = await c.snapshot(since: 0)
+        #expect(snap.lastBatteryTest?.outcome == .passed)
+        #expect(snap.events.contains { if case .batteryTestFinished = $0.event { true } else { false } })
     }
 }

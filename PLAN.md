@@ -226,7 +226,14 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
   - Se implementó y probó el apagado programado de la salida (`S<n>`), pero **la NT-2402PRO lo rechaza** (responde `N` con luz y en batería; ver spec.md §3.4). Se quitó de la app.
   - Por eso la Mac arranca sola solo si el corte agota la batería de la UPS; si la luz vuelve antes, queda apagada. Se descartó el encendido programado (`pmset schedule poweron`).
 - [ ] Prueba de recuperación con `autorestart`: verificar que, tras agotarse la batería, la UPS restablece la salida al volver la luz y la Mac arranca sola
-- [ ] Test de batería (`T`): probarlo y agregarlo como control (el engine debe ignorar `onBattery` mientras b2 = 1)
+- [x] Validación del test de batería (`T`) en la UPS real (2026-10-13, `upsctl battery-test`): funciona, marca b2 ~6 s, **no activa b7** y la batería cae a ~26,0 V con ~6 % de consumo (ver spec.md §3.4)
+- [x] Test de batería en la app (2026-10-13):
+  - **Ajustes → UPS → Test de batería:** botón *Probar ahora…* que abre una hoja (explicación → progreso → resultado con voltajes, caída, consumo y comparación con la referencia); la fila muestra el último resultado. No está en el popover, por decisión de diseño.
+  - **Núcleo** (`MonitorCore.runBatteryTest`): envía `T`, sigue b2 cada 1 s, mide el voltaje mínimo y el consumo, y detecta batería baja o falla. Solo con luz, comunicación y fase normal.
+  - **Salud:** el primer test superado es la **referencia**. Un test posterior con consumo parecido (±5 puntos) y voltaje mínimo 0,4 V por debajo de la referencia se marca **desgaste**; batería baja o falla durante el test es **falla**.
+  - **Historial:** cada test queda guardado (no se descarta por antigüedad, porque la referencia puede tener años). Aparece en la lista de episodios y en el CSV.
+  - **Automático** (Ajustes → UPS → *Test de batería automático*: desactivado, cada semana o cada mes): solo con 10 min de luz estable. Notifica solo si hay falla, desgaste o la UPS no inició el test.
+- [ ] Primer test desde la app (queda como referencia de salud)
 
 ### Fase 3 — Extras
 - [ ] Estimación de autonomía por la pendiente del voltaje

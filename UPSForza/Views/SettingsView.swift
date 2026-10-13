@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.maxMinutesOnBattery) private var maxMinutes = 10
     @AppStorage(SettingsKey.warningSeconds) private var warningSeconds = 60
     @AppStorage(SettingsKey.pollInterval) private var pollInterval = 5
+    @AppStorage(SettingsKey.batteryTestIntervalDays) private var batteryTestDays = 0
 
     var body: some View {
         Form {
@@ -68,6 +69,15 @@ struct SettingsView: View {
                     if let error = monitor.beeperSyncError {
                         Text(error).foregroundStyle(Color.dangerRed)
                     }
+                }
+                BatteryTestRow()
+                Picker(selection: $batteryTestDays) {
+                    Text("Desactivado").tag(0)
+                    Text("Cada semana").tag(7)
+                    Text("Cada mes").tag(30)
+                } label: {
+                    Text("Test de batería automático")
+                    Text("Con luz estable, la UPS alimenta la Mac ~6 s desde la batería. Avisa solo si hay falla o desgaste.")
                 }
                 LabeledContent("Modelo", value: "Forza NT-2402PRO")
                 LabeledContent("Protocolo", value: monitor.protocolVariant.map { "Voltronic-QS-Hex (\($0))" } ?? "—")

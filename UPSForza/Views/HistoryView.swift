@@ -337,7 +337,7 @@ private struct BinnedBarChart: View {
 // MARK: - Episodios
 
 private struct Episode: Identifiable {
-    enum Kind { case outage, avr }
+    enum Kind { case outage, avr, batteryTest }
     let id: UUID
     let kind: Kind
     let start: Date
@@ -345,6 +345,9 @@ private struct Episode: Identifiable {
     let inProgress: Bool
     let detail: String
     let imported: Bool
+    /// Color del ícono (para los tests: según el resultado).
+    var tint: Color? = nil
+    var badge: String? = nil
 
     var duration: String {
         if inProgress { return "en curso" }
@@ -379,7 +382,32 @@ private struct EpisodeList: View {
             return Episode(id: a.id, kind: .avr, start: a.start, end: a.end,
                            inProgress: a.id == snapshot.currentAVRID, detail: detail, imported: a.imported)
         }
-        return (outages + avr).sorted { $0.start > $1.start }
+        let tests = snapshot.batteryTests.map { t in
+            let label = switch (t.outcome, t.health) {
+            case (.failed, _): "Falla: batería baja o falla de la UPS"
+            case (.notStarted, _): "La UPS no inició el test"
+            case (_, .degrading): "Desgaste"
+            case (_, .reference): "Referencia"
+            default: "OK"
+            }
+            var detail = label
+            if t.outcome != .notStarted {
+                detail += String(format: " · mín. %.2f V (antes %.2f V, caída %.2f V) · consumo %d %%",
+                                 t.voltageMin, t.voltageBefore, t.drop, t.maxLoadPercent)
+                if let ref = t.referenceVoltage, t.health != .reference {
+                    detail += String(format: " · referencia %.2f V", ref)
+                }
+            }
+            let tint: Color = switch (t.outcome, t.health) {
+            case (.failed, _): .dangerRed
+            case (_, .degrading), (.notStarted, _): .warningAmber
+            default: .batteryGreen
+            }
+            return Episode(id: t.id, kind: .batteryTest, start: t.start, end: t.start.addingTimeInterval(t.duration),
+                           inProgress: false, detail: detail, imported: false, tint: tint,
+                           badge: t.trigger == .scheduled ? "automático" : nil)
+        }
+        return (outages + avr + tests).sorted { $0.start > $1.start }
     }
 
     var body: some View {
@@ -403,15 +431,39 @@ private struct EpisodeList: View {
 private struct EpisodeRow: View {
     let episode: Episode
 
+    private var icon: String {
+        switch episode.kind {
+        case .outage: "bolt.slash.fill"
+        case .avr: "waveform.path.ecg"
+        case .batteryTest: "minus.plus.batteryblock"
+        }
+    }
+
+    private var title: String {
+        switch episode.kind {
+        case .outage: "Corte de luz"
+        case .avr: "AVR activo"
+        case .batteryTest: "Test de batería"
+        }
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Image(systemName: episode.kind == .outage ? "bolt.slash.fill" : "waveform.path.ecg")
-                .foregroundStyle(episode.kind == .outage ? Color.chartOutage : Color.chartAVR)
+            Image(systemName: icon)
+                .foregroundStyle(episode.tint ?? (episode.kind == .outage ? Color.chartOutage : Color.chartAVR))
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(episode.kind == .outage ? "Corte de luz" : "AVR activo")
+                    Text(title)
                         .font(.callout.weight(.semibold))
+                    if let badge = episode.badge {
+                        Text(badge)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                    }
                     if episode.imported {
                         Text("del registro")
                             .font(.caption2)
@@ -512,7 +564,7 @@ enum HistoryCSV {
     }
 
     static func episodes(_ snap: HistorySnapshot) -> String {
-        var rows = ["tipo,inicio,fin,duracion_s,bateria_min_v,bateria_min_pct,consumo_max_pct,apagado,avr_modo,entrada_min_v,entrada_max_v,salida_min_v,salida_max_v,importado"]
+        var rows = ["tipo,inicio,fin,duracion_s,bateria_min_v,bateria_min_pct,consumo_max_pct,apagado,avr_modo,entrada_min_v,entrada_max_v,salida_min_v,salida_max_v,importado,resultado,bateria_antes_v"]
         for o in snap.outages.sorted(by: { $0.start < $1.start }) {
             rows.append([
                 "corte", stamp(o.start), stamp(o.end),
@@ -520,7 +572,7 @@ enum HistoryCSV {
                 num(o.minBatteryVoltage, 2), o.minBatteryPercent.map(String.init) ?? "",
                 o.maxLoadPercent.map(String.init) ?? "",
                 quoted(o.shutdownReason?.description ?? ""), "", "", "", "", "",
-                o.imported ? "si" : "no",
+                o.imported ? "si" : "no", "", "",
             ].joined(separator: ","))
         }
         for a in snap.avr.sorted(by: { $0.start < $1.start }) {
@@ -529,7 +581,15 @@ enum HistoryCSV {
                 a.end.map { String(Int($0.timeIntervalSince(a.start))) } ?? "",
                 "", "", "", "", a.mode.rawValue,
                 num(a.inputMin), num(a.inputMax), num(a.outputMin), num(a.outputMax),
-                a.imported ? "si" : "no",
+                a.imported ? "si" : "no", "", "",
+            ].joined(separator: ","))
+        }
+        for t in snap.batteryTests.sorted(by: { $0.start < $1.start }) {
+            rows.append([
+                "test_bateria", stamp(t.start), stamp(t.start.addingTimeInterval(t.duration)),
+                String(Int(t.duration)), num(t.voltageMin, 2), "", String(t.maxLoadPercent),
+                "", "", "", "", "", "", "no",
+                "\(t.outcome.rawValue)/\(t.health.rawValue)", num(t.voltageBefore, 2),
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n") + "\n"

@@ -141,6 +141,14 @@ final class DaemonService: NSObject, UPSDaemonProtocol {
         }
     }
 
+    func runBatteryTest(reply: @escaping @Sendable (Data?) -> Void) {
+        clients.touch()
+        Task {
+            let response = await core.runBatteryTest(trigger: .manual)
+            reply(try? DaemonIdentity.jsonEncoder.encode(response))
+        }
+    }
+
     func powerSettings(reply: @escaping @Sendable (Data?) -> Void) {
         reply(try? DaemonIdentity.jsonEncoder.encode(PowerManagement.current()))
     }

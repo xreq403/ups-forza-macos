@@ -139,12 +139,28 @@ raw : 23 6d 01 20 6c 20 6d 01 20 6c 20 04 20 60 28 03 20 12 c0 00 20 e9 20 3c 20
 | Comando | Acción |
 |---|---|
 | `Q` | Alterna la alarma sonora (sin respuesta). **Probado el 2026-10-12:** cambia el bit b0 del estado. No hay comandos separados para activar y desactivar: para fijar un estado hay que leer b0 y alternar solo si no coincide |
-| `T` | Test rápido de batería |
+| `T` | Test rápido de batería (sin respuesta). **Probado el 2026-10-13:** funciona, ver abajo |
 | `C` | Cancela un apagado programado / enciende la salida |
 | `S<n>` | Apaga la salida tras `n` minutos (`.2`–`.9` o `01`–`09`) y la reenciende al volver la luz |
 | `S<n>R0000` | Apaga la salida tras `n` minutos y **no** la reenciende |
 
 NUT acepta para el retardo de apagado un rango de 12 a 540 segundos.
+
+**Prueba de `T` (2026-10-13, con luz, consumo del 5–6 %):**
+
+```
+ t    bits      b2 test  b7 batería  bat V   consumo  salida
+ 0 s  00001000  no       no          27.29    5%      235.1 V   (antes)
+ 1 s  00001100  sí       no          27.18    4%      235.1 V
+ 2 s  00001100  sí       no          26.47    6%      220.3 V
+ 6 s  00001100  sí       no          26.00    6%      222.4 V
+ 7 s  00001000  no       no          26.47    3%      235.1 V   (volvió a la red)
+```
+
+- La UPS acepta `T` sin responder y marca **b2 (test en curso) durante ~6 s**.
+- **No activa b7** (en batería): el monitor no lo confunde con un corte.
+- La salida pasa al inversor (216–222 V) y la batería cae de 27,29 a **26,00 V**. Vuelve sola a la red, sin batería baja ni falla.
+- **Referencia de salud:** ~26,0 V al final del test con baterías sanas y ~6 % de consumo. Una caída mayor en tests futuros, con el mismo consumo, indica desgaste.
 
 **Prueba de `S09` (2026-10-13, con luz):**
 - La UPS respondió **`N`** (rechazado) y no activó el bit b1 (*Shutdown Active*, confirmado en NUT como el bit 44 de la cadena de estado).
