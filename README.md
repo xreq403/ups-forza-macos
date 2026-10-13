@@ -30,6 +30,7 @@ Esta app habla directamente con la UPS. Muestra su estado en la barra de menús,
 - **Alarma sonora:** se activa o silencia desde el panel o desde Ajustes, y se vuelve a aplicar cada vez que la app inicia o la UPS se reconecta.
 - **Arranque automático** al iniciar sesión.
 - **Test de batería:** comprueba que las baterías sostienen la carga (~6 s en batería), con referencia de salud, aviso de desgaste y test automático opcional.
+- **Panel en vivo:** voltaje de la red, batería y consumo de la última hora, 6 h o 24 h, con los cortes sombreados.
 - **Historial de la red:** cortes de luz y activaciones del AVR, voltaje de la red por día, gráficos y exportación a CSV.
 - **Servicio en segundo plano (daemon root):** vigila la UPS aunque no haya sesión abierta y fuerza el apagado si una app lo bloquea.
 - **Registro** de eventos y lecturas en `/Library/Logs/UPSForza/ups-forza.log` (con el servicio) o `~/Library/Logs/ups-forza.log` (sin él).

@@ -107,6 +107,11 @@ final class UPSMonitor {
         }
     }
 
+    func loadSeries(_ range: SeriesRange) async throws -> [SeriesPoint] {
+        guard let backend else { throw DaemonBackendError.noProxy }
+        return try await backend.series(range)
+    }
+
     func powerSettings() async throws -> SystemPowerSettings {
         guard let backend else { throw DaemonBackendError.noProxy }
         return try await backend.powerSettings()

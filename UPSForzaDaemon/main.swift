@@ -20,6 +20,7 @@ let settingsURL = supportDir.appending(path: "settings\(suffix).json")
 let logURL = URL(fileURLWithPath: "/Library/Logs/UPSForza/ups-forza\(suffix).log")
 let log = EventLog(url: logURL)
 let historyURL = supportDir.appending(path: "history\(suffix).jsonl")
+let seriesURL = supportDir.appending(path: "series\(suffix).json")
 
 /// Registros de texto para reconstruir el historial la primera vez: el del daemon
 /// y los de la app en modo local de cada usuario (`~/Library/Logs/ups-forza.log`).
@@ -90,7 +91,8 @@ let core = MonitorCore(
     forced: .available(grace: 90, hasActiveClient: { clients.isActive }, execute: forceShutdown),
     enforceBeeper: savedSettings,
     historyURL: historyURL,
-    importLogs: logsToImport()
+    importLogs: logsToImport(),
+    seriesURL: seriesURL
 )
 
 // MARK: - XPC
@@ -151,6 +153,14 @@ final class DaemonService: NSObject, UPSDaemonProtocol {
         Task {
             let response = await core.runBatteryTest(trigger: .manual)
             reply(try? DaemonIdentity.jsonEncoder.encode(response))
+        }
+    }
+
+    func series(minutes: Int, reply: @escaping @Sendable (Data?) -> Void) {
+        clients.touch()
+        Task {
+            let range = SeriesRange(rawValue: minutes) ?? .hour1
+            reply(try? DaemonIdentity.jsonEncoder.encode(await core.series(range)))
         }
     }
 

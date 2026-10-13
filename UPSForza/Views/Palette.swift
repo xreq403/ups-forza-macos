@@ -20,6 +20,10 @@ extension Color {
     static let chartOutage = Color(light: 0xB86E00, dark: 0xC98000)
     static let chartAVR = Color(light: 0x0A64C8, dark: 0x3B8EEA)
 
+    /// Panel: entrada y salida de la UPS (par validado, también con daltonismo).
+    static let chartInput = Color(light: 0x0A64C8, dark: 0x3B8EEA)
+    static let chartOutput = Color(light: 0xC2457A, dark: 0xD9609A)
+
     init(light: UInt32, dark: UInt32) {
         self.init(nsColor: NSColor(name: nil) { appearance in
             let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light

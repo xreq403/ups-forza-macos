@@ -210,7 +210,18 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
 - [x] Daemon root (`SMAppService.daemon` + XPC): monitoreo con privilegios, apagado forzado y funcionamiento sin sesión abierta (2026-10-13)
 - [x] Prueba del apagado forzado (2026-10-13): con una app bloqueando el apagado ordenado, el daemon apagó la Mac a los 90 s. El registro ahora se vacía antes del `shutdown`, porque la línea del apagado forzado se perdía
 - [ ] Prueba sin sesión: cerrar sesión, cortar la luz y verificar que el daemon apague
-- [ ] Ventana principal con dashboard y gráficos en vivo (Swift Charts)
+- [x] Panel en vivo (2026-10-13). La ventana **UPS Forza** tiene dos pestañas, *Panel* e *Historial*, y se abre desde el módulo *Panel* del popover:
+  - **Serie temporal** (`UPSKit/Series.swift`, en `MonitorCore`, la registra el daemon):
+    - cada lectura de la última hora;
+    - agregados por minuto de las últimas 24 h (mín/prom/máx), guardados en `series.json` cada 5 min para sobrevivir a reinicios.
+    - Por XPC: `series(minutes:)`.
+  - **Vista:**
+    - valores actuales;
+    - tres gráficos separados (voltaje de red con entrada/salida, batería, consumo en W) para 1 h / 6 h / 24 h;
+    - cortes sombreados; la entrada se corta durante el corte (no se grafican los ~8,5 V residuales);
+    - línea vertical con tooltip, compartida por los tres gráficos;
+    - par de colores entrada/salida validado (azul/rosa, también con daltonismo).
+  - Se actualiza cada 5 s (1 h) o cada minuto (6 h y 24 h).
 - [x] Historial de eventos de la red (2026-10-13), con exportación a CSV:
   - **Cortes de luz:** inicio, fin, voltaje y % mínimos de batería, consumo máximo y, si terminó con la Mac apagada, el motivo.
   - **Activaciones del AVR:** inicio, fin, tipo (*reducción* si la salida es menor que la entrada, *elevación* si es mayor) y voltajes de entrada y salida.

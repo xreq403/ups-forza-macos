@@ -15,6 +15,7 @@ protocol MonitorBackend: AnyObject, Sendable {
     func powerSettings() async throws -> SystemPowerSettings
     func setAutoRestart(_ on: Bool) async throws
     func runBatteryTest() async throws -> BatteryTestResponse
+    func series(_ range: SeriesRange) async throws -> [SeriesPoint]
 }
 
 /// Historial de la app en modo local (sin daemon).
@@ -67,7 +68,8 @@ final class LocalBackend: MonitorBackend {
             log: EventLog(url: EventLog.userLogURL),
             forced: .unavailable(retryAfter: 120),
             historyURL: LocalHistory.url,
-            importLogs: LocalHistory.prepare()
+            importLogs: LocalHistory.prepare(),
+            seriesURL: LocalHistory.url.deletingLastPathComponent().appending(path: "series.json")
         )
     }
 
@@ -81,6 +83,7 @@ final class LocalBackend: MonitorBackend {
     func clearHistory(includeLogs: Bool) async throws { await core.clearHistory(includeLogs: includeLogs) }
     func powerSettings() async throws -> SystemPowerSettings { PowerManagement.current() }
     func runBatteryTest() async throws -> BatteryTestResponse { await core.runBatteryTest(trigger: .manual) }
+    func series(_ range: SeriesRange) async throws -> [SeriesPoint] { await core.series(range) }
     func setAutoRestart(_ on: Bool) async throws { throw PowerManagementError.notRoot }
 }
 
@@ -156,6 +159,15 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
 
     func clearHistory(includeLogs: Bool) async throws {
         try await call { proxy, done in proxy.clearHistory(includeLogs: includeLogs) { done(.success(())) } }
+    }
+
+    func series(_ range: SeriesRange) async throws -> [SeriesPoint] {
+        let data: Data = try await call(timeout: 10) { proxy, done in
+            proxy.series(minutes: range.minutes) { data in
+                done(data.map { .success($0) } ?? .failure(DaemonBackendError.badReply))
+            }
+        }
+        return try DaemonIdentity.jsonDecoder.decode([SeriesPoint].self, from: data)
     }
 
     func mergeHistory(_ jsonl: Data) async throws -> Int {

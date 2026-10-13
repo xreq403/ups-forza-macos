@@ -275,14 +275,14 @@ struct HistoryTile: View {
 
     var body: some View {
         Button(action: action) {
-            ModuleTile(symbol: "clock.arrow.circlepath", active: false, title: "Historial", subtitle: "Cortes y AVR") {
+            ModuleTile(symbol: "chart.xyaxis.line", active: false, title: "Panel", subtitle: "En vivo e historial") {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
         }
         .buttonStyle(.plain)
-        .help("Ver el historial de cortes de luz y del AVR")
+        .help("Gráficos en vivo e historial de cortes y AVR")
     }
 }
 

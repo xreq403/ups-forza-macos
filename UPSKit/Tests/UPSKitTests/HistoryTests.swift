@@ -251,3 +251,45 @@ struct MicroOutageTests {
         #expect(HistorySummary.daily(snap, days: 1).first?.microOutages == 1)
     }
 }
+
+struct SeriesTests {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)   // múltiplo de 60 s
+    func at(_ s: Double) -> Date { t0.addingTimeInterval(s) }
+    let online = UPSStatus(inputVoltage: 235, outputVoltage: 235, loadPercent: 5, batteryVoltage: 27.3)
+    let battery = UPSStatus(inputVoltage: 8.5, outputVoltage: 224, loadPercent: 7, batteryVoltage: 25.2, onBattery: true)
+
+    @Test func rawLastHourAndMinuteAggregates() {
+        let s = SeriesStore(url: nil)
+        for i in 0..<24 { s.add(i == 13 ? battery : online, at: at(Double(i) * 5)) }   // 2 minutos
+        #expect(s.series(.hour1, now: at(120)).count == 24)
+        let minutes = s.series(.hours6, now: at(120))
+        #expect(minutes.count == 2)
+        #expect(minutes[0].onBattery == false)
+        #expect(minutes[1].onBattery == true)
+        #expect(minutes[1].inputMin == 235)          // los 8,5 V del corte no cuentan
+        #expect(minutes[1].batteryMin == 25.2)
+        #expect(minutes[1].loadMax == 7)
+    }
+
+    @Test func dropsReadingsOlderThanAnHour() {
+        let s = SeriesStore(url: nil)
+        s.add(online, at: at(0))
+        s.add(online, at: at(3700))
+        #expect(s.series(.hour1, now: at(3700)).count == 1)
+    }
+
+    @Test func persistsMinutes() {
+        let url = FileManager.default.temporaryDirectory.appending(path: "series-\(UUID().uuidString).json")
+        let now = Date.now
+        let s = SeriesStore(url: url)
+        s.add(online, at: now.addingTimeInterval(-180))
+        s.add(online, at: now.addingTimeInterval(-60))   // cierra el minuto anterior
+        s.save(at: now)
+        #expect(SeriesStore(url: url).series(.hours6, now: now).count >= 1)
+    }
+
+    @Test func bucketsOf24Hours() {
+        let pts = (0..<10).map { i in SeriesStore.point([online], at: at(Double(i) * 60)) }
+        #expect(SeriesStore.bucket(pts, seconds: 300).count == 2)
+    }
+}

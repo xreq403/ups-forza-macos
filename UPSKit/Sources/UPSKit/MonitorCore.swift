@@ -156,6 +156,7 @@ public actor MonitorCore {
     private static let maxEvents = 200
 
     private let history: HistoryStore?
+    private let series: SeriesStore
     private let importLogs: [URL]
     private var loopTask: Task<Void, Never>?
     private var polling = false
@@ -168,8 +169,10 @@ public actor MonitorCore {
         forced: ForcedShutdown,
         enforceBeeper: Bool = true,
         historyURL: URL? = nil,
-        importLogs: [URL] = []
+        importLogs: [URL] = [],
+        seriesURL: URL? = nil
     ) {
+        self.series = SeriesStore(url: seriesURL)
         self.history = historyURL.map(HistoryStore.init)
         self.importLogs = importLogs
         self.device = device
@@ -209,9 +212,15 @@ public actor MonitorCore {
         loopTask = nil
         device.stop()
         history?.checkpoint()
+        series.save()
     }
 
     // MARK: API
+
+    /// Serie temporal de lecturas para el panel en vivo.
+    public func series(_ range: SeriesRange) -> [SeriesPoint] {
+        series.series(range)
+    }
 
     /// Historial de los últimos `days` días.
     public func history(days: Int) -> HistorySnapshot {
@@ -303,6 +312,7 @@ public actor MonitorCore {
             logReading(s)
             handle(engine.ingest(s, at: .now))
             history?.ingest(s, at: .now)
+            series.add(s, at: .now)
             if beeperEnforced && s.beeperOn != settings.beeperEnabled { await syncBeeper() }
         } catch {
             lastError = String(describing: error)
