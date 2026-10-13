@@ -38,6 +38,7 @@ public final class HIDTransport: @unchecked Sendable {
     private let commandLock = NSLock()         // serializa comandos completos
     private var manager: IOHIDManager?
     private var thread: Thread?
+    private var runLoop: CFRunLoop?
     private let reportBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
 
     public init() {}
@@ -68,6 +69,7 @@ public final class HIDTransport: @unchecked Sendable {
             IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
             IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
             self.manager = manager
+            self.runLoop = CFRunLoopGetCurrent()
             ready.signal()
             CFRunLoopRun()
         }
@@ -75,6 +77,31 @@ public final class HIDTransport: @unchecked Sendable {
         thread = t
         t.start()
         ready.wait()
+    }
+
+    /// Deja de usar la UPS: cierra el `IOHIDManager` y termina el hilo HID,
+    /// para que otro proceso (el daemon) pueda tomar el USB. Se puede volver a `start()`.
+    public func stop() {
+        guard thread != nil, let runLoop, let manager else { return }
+        let done = DispatchSemaphore(value: 0)
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue) {
+            IOHIDManagerUnscheduleFromRunLoop(manager, runLoop, CFRunLoopMode.defaultMode.rawValue)
+            IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            CFRunLoopStop(runLoop)
+            done.signal()
+        }
+        CFRunLoopWakeUp(runLoop)
+        done.wait()
+
+        state.lock()
+        let wasConnected = device != nil
+        device = nil
+        state.broadcast()
+        state.unlock()
+        self.manager = nil
+        self.runLoop = nil
+        thread = nil
+        if wasConnected { onConnectionChange?(false) }
     }
 
     /// Envía un comando y devuelve la respuesta cruda (hasta `\r` inclusive).

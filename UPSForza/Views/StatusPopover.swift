@@ -70,7 +70,7 @@ struct StatusPopover: View {
 
 struct StatusPill: View {
     let phase: PowerPhase
-    let link: UPSMonitor.Link
+    let link: LinkState
 
     var body: some View {
         let (text, color) = content

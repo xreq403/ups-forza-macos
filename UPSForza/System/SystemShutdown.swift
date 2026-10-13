@@ -21,7 +21,6 @@ enum SystemShutdown {
             )
             _ = try event.sendEvent(options: [.noReply], timeout: 30)
         } catch {
-            EventLog.shared.write("AppleEvent a loginwindow falló (\(error)); probando con System Events")
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             p.arguments = ["-e", "tell application \"System Events\" to shut down"]

@@ -2,7 +2,8 @@
 # Compila la app con Xcode y deja "build/UPSForza.app".
 #   scripts/build-app.sh            compila (Release)
 #   scripts/build-app.sh --install  además la copia a /Applications y la abre
-# Firma ad-hoc por defecto; para firmar con tu equipo: DEVELOPMENT_TEAM=XXXXXXXXXX scripts/build-app.sh
+# Firma con el certificado Apple Development del equipo configurado en el proyecto
+# (hace falta para el daemon root). Otro equipo: DEVELOPMENT_TEAM=XXXXXXXXXX scripts/build-app.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

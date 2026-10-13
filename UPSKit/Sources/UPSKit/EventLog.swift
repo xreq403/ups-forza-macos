@@ -1,18 +1,29 @@
 import Foundation
 import os
 
-/// Registro de eventos y lecturas en `~/Library/Logs/ups-forza.log`.
-/// Rota a `ups-forza.1.log` al superar 5 MB.
-final class EventLog: Sendable {
-    static let shared = EventLog()
-
-    let url = FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: "Library/Logs/ups-forza.log")
+/// Registro de eventos y lecturas en un archivo de texto, una línea por evento.
+/// Rota a `<nombre>.1.log` al superar 5 MB.
+public final class EventLog: Sendable {
+    public let url: URL
     private let queue = DispatchQueue(label: "UPSForza.log")
     private let logger = Logger(subsystem: "UPSForza", category: "events")
     private static let maxSize = 5 * 1024 * 1024
 
-    func write(_ message: String) {
+    public init(url: URL) {
+        self.url = url
+    }
+
+    /// `~/Library/Logs/ups-forza.log` del usuario actual.
+    public static var userLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/ups-forza.log")
+    }
+
+    /// Espera a que se escriban las líneas pendientes (antes de salir del proceso).
+    public func flush() {
+        queue.sync {}
+    }
+
+    public func write(_ message: String) {
         logger.info("\(message, privacy: .public)")
         let date = Date()
         let url = self.url
@@ -35,5 +46,15 @@ final class EventLog: Sendable {
                 try? line.write(to: url)
             }
         }
+    }
+}
+
+extension TimeInterval {
+    /// "1 h 05 min", "4 min 12 s", "35 s".
+    public var durationText: String {
+        let s = Int(self.rounded())
+        if s >= 3600 { return "\(s / 3600) h \(String(format: "%02d", s % 3600 / 60)) min" }
+        if s >= 60 { return "\(s / 60) min \(s % 60) s" }
+        return "\(s) s"
     }
 }

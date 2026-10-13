@@ -27,6 +27,15 @@ enum AppSettings {
     static var pollInterval: Int { max(UserDefaults.standard.integer(forKey: SettingsKey.pollInterval), 1) }
     static var beeperEnabled: Bool { UserDefaults.standard.bool(forKey: SettingsKey.beeperEnabled) }
 
+    /// Ajustes que se envían al monitor (daemon o local).
+    static var monitorSettings: MonitorSettings {
+        var s = MonitorSettings()
+        s.pollInterval = pollInterval
+        s.policy = policy
+        s.beeperEnabled = beeperEnabled
+        return s
+    }
+
     static var policy: ShutdownPolicy {
         let d = UserDefaults.standard
         var p = ShutdownPolicy()
@@ -35,15 +44,5 @@ enum AppSettings {
         p.maxMinutesOnBattery = d.integer(forKey: SettingsKey.maxMinutesOnBattery)
         p.warningSeconds = d.integer(forKey: SettingsKey.warningSeconds)
         return p
-    }
-}
-
-extension TimeInterval {
-    /// "1 h 05 min", "4 min 12 s", "35 s".
-    var durationText: String {
-        let s = Int(self.rounded())
-        if s >= 3600 { return "\(s / 3600) h \(String(format: "%02d", s % 3600 / 60)) min" }
-        if s >= 60 { return "\(s / 60) min \(s % 60) s" }
-        return "\(s) s"
     }
 }

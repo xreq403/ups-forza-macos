@@ -1,0 +1,40 @@
+import Foundation
+
+/// Interfaz XPC que expone el daemon root a la app. Los datos viajan como JSON
+/// (`MonitorSnapshot`, `MonitorSettings`) para no depender de `NSSecureCoding`.
+@objc public protocol UPSDaemonProtocol {
+    /// Estado actual y eventos posteriores a `eventID` (-1 = sin eventos, solo el último id).
+    func snapshot(since eventID: Int, reply: @escaping @Sendable (Data?) -> Void)
+    func updateSettings(_ settings: Data, reply: @escaping @Sendable (Bool) -> Void)
+    func postpone(minutes: Int, reply: @escaping @Sendable () -> Void)
+    func shutdownNow(reply: @escaping @Sendable () -> Void)
+}
+
+/// Identidades y requisitos de firma compartidos por la app y el daemon.
+public enum DaemonIdentity {
+    public static let teamID = "L77R5X2WV6"
+    /// Identificador de firma del ejecutable del daemon.
+    public static let daemonCodeIdentifier = "com.xreq403.UPSForza.daemon"
+    public static let appIdentifiers = ["com.xreq403.UPSForza", "com.xreq403.UPSForza.debug"]
+
+    /// Label de launchd y nombre del servicio Mach, por build de la app:
+    /// `com.xreq403.UPSForza.daemon` (Release) o `com.xreq403.UPSForza.debug.daemon` (Debug).
+    public static func label(forAppBundleID id: String) -> String { id + ".daemon" }
+
+    /// Labels de todos los daemons posibles (Release y Debug).
+    public static var allLabels: [String] { appIdentifiers.map(label(forAppBundleID:)) }
+
+    /// El daemon solo acepta conexiones de la app firmada por el equipo.
+    public static var clientRequirement: String {
+        let ids = appIdentifiers.map { "identifier \"\($0)\"" }.joined(separator: " or ")
+        return "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\" and (\(ids))"
+    }
+
+    /// La app solo habla con el daemon firmado por el equipo.
+    public static var daemonRequirement: String {
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\" and identifier \"\(daemonCodeIdentifier)\""
+    }
+
+    public static let jsonEncoder = JSONEncoder()
+    public static let jsonDecoder = JSONDecoder()
+}

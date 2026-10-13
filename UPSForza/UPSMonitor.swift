@@ -2,62 +2,62 @@ import AppKit
 import Observation
 import UPSKit
 
-/// Consulta la UPS periódicamente, aplica la política de apagado y actúa sobre
-/// sus eventos: notificaciones, log, aviso de apagado y apagado de la Mac.
+/// Estado de la UPS para la interfaz. No habla con la UPS directamente: lo hace
+/// un backend, que es el daemon root (si está activo) o un monitor local en la
+/// propia app. Nunca los dos a la vez, para no competir por el USB.
+///
+/// La app reacciona a los eventos del monitor: notificaciones, panel de aviso y
+/// apagado ordenado de la Mac (que tiene que hacerse desde la sesión del usuario).
 @MainActor @Observable
 final class UPSMonitor {
-    enum Link: Equatable {
-        case searching   // nunca se conectó desde que arrancó la app
-        case connected
-        case lost
+    enum BackendKind: Equatable {
+        case none
+        case local
+        case daemon
     }
 
     private(set) var status: UPSStatus?
-    private(set) var link: Link = .searching
+    private(set) var link: LinkState = .searching
     private(set) var phase: PowerPhase = .unknown
-    private(set) var lastUpdate: Date?
     private(set) var protocolVariant: String?
     private(set) var lastError: String?
-    private(set) var policy = AppSettings.policy
-    /// Error al aplicar el ajuste de alarma sonora, si la UPS no obedeció.
     private(set) var beeperSyncError: String?
-    /// Se está enviando el cambio de alarma a la UPS.
     private(set) var beeperSyncing = false
+    private(set) var logURL = EventLog.userLogURL
+    private(set) var backendKind: BackendKind = .none
+    /// El daemon está activo pero no responde.
+    private(set) var backendError: String?
 
-    /// Alarma sonora deseada. Se guarda en los ajustes y se aplica a la UPS.
+    /// Alarma sonora deseada. Se guarda en los ajustes y se envía al monitor.
     var beeperEnabled: Bool = AppSettings.beeperEnabled {
         didSet {
             guard beeperEnabled != oldValue else { return }
             UserDefaults.standard.set(beeperEnabled, forKey: SettingsKey.beeperEnabled)
-            beeperAttempts = 0
-            Task { await syncBeeper(force: true) }
+            Task { await pushSettingsIfNeeded() }
         }
     }
 
-    @ObservationIgnored private let ups = ForzaUPS()
-    @ObservationIgnored private var engine = ShutdownEngine()
-    @ObservationIgnored private var pollTask: Task<Void, Never>?
-    @ObservationIgnored private var tickTask: Task<Void, Never>?
+    let daemon = DaemonController()
+
+    @ObservationIgnored private var backend: MonitorBackend?
+    /// Label del daemon en uso (puede ser el de la otra build, p. ej. la Release desde Xcode).
+    @ObservationIgnored private var daemonLabelInUse: String?
+    @ObservationIgnored private var daemonFailures = 0
+    @ObservationIgnored private var lastProbe = Date.distantPast
+    @ObservationIgnored private var lastEventID = -1
+    @ObservationIgnored private var lastPushed: MonitorSettings?
+    @ObservationIgnored private var loopTask: Task<Void, Never>?
+    @ObservationIgnored private var ticks = 0
     @ObservationIgnored private let notifier = Notifier()
-    @ObservationIgnored private let log = EventLog.shared
     @ObservationIgnored private let warningPanel = ShutdownWarningPanel()
-    @ObservationIgnored private var lastReadingLogged = Date.distantPast
-    @ObservationIgnored private var beeperTarget: Bool?
-    @ObservationIgnored private var beeperAttempts = 0
-    private static let maxBeeperAttempts = 3
 
     func start() {
-        guard pollTask == nil else { return }
+        guard loopTask == nil else { return }
         notifier.requestAuthorization()
-        log.write("Inicio de UPS Forza")
-        ups.transport.onConnectionChange = { connected in
-            Task { @MainActor in self.connectionChanged(connected) }
-        }
-        ups.start()
-        pollTask = Task {
+        loopTask = Task {
             while !Task.isCancelled {
-                await poll()
-                try? await Task.sleep(for: .seconds(AppSettings.pollInterval))
+                await refresh()
+                try? await Task.sleep(for: .seconds(1))
             }
         }
     }
@@ -65,11 +65,11 @@ final class UPSMonitor {
     // MARK: - Acciones del usuario
 
     func postpone(minutes: Int = 5) {
-        handle(engine.postpone(minutes: minutes, at: .now))
+        Task { try? await backend?.postpone(minutes: minutes); await refresh() }
     }
 
     func shutdownNow() {
-        handle(engine.shutdownImmediately(at: .now))
+        Task { try? await backend?.shutdownNow(); await refresh() }
     }
 
     func sendTestNotification() {
@@ -80,160 +80,142 @@ final class UPSMonitor {
         if case .warning(_, _, let reason) = phase { reason != .upsBatteryLow } else { false }
     }
 
-    // MARK: - Consulta
+    // MARK: - Ciclo
 
-    private func poll() async {
-        policy = AppSettings.policy
-        engine.policy = policy
+    private func refresh() async {
+        // El estado del daemon puede cambiar desde Ajustes del Sistema: revisarlo cada 5 s.
+        if ticks % 5 == 0 { daemon.refresh() }
+        ticks += 1
+
+        let (kind, label) = await chooseBackend()
+        if kind != backendKind || label != daemonLabelInUse { await switchBackend(to: kind, label: label) }
+        guard let backend else { return }
+
+        await pushSettingsIfNeeded()
         do {
-            let s = try await ups.status()
-            status = s
-            lastUpdate = .now
-            lastError = nil
-            link = .connected
-            logReading(s)
-            handle(engine.ingest(s, at: .now))
-            if s.beeperOn != beeperEnabled { await syncBeeper() }
+            apply(try await backend.snapshot(since: lastEventID))
+            backendError = nil
+            daemonFailures = 0
         } catch {
-            lastError = String(describing: error)
-            handle(engine.ingestFailure(at: .now))
-        }
-        phase = engine.phase
-    }
-
-    private func connectionChanged(_ connected: Bool) {
-        log.write(connected ? "UPS conectada por USB" : "UPS desconectada del USB")
-        guard connected else { return }
-        beeperAttempts = 0   // al reconectar, volver a aplicar la configuración
-        Task {
-            if protocolVariant == nil { protocolVariant = try? await ups.protocolVariant() }
-            await poll()
+            backendError = String(describing: error)
+            daemonFailures += 1
         }
     }
 
-    /// La alarma sonora sigue el ajuste: se aplica al iniciar, al reconectar la UPS,
-    /// al cambiar el ajuste y si la UPS vuelve a otro estado. Tras
-    /// `maxBeeperAttempts` intentos fallidos se deja de insistir hasta el próximo
-    /// cambio de ajuste o reconexión, para no quedar alternando.
-    private func syncBeeper(force: Bool = false) async {
-        let want = beeperEnabled
-        if want != beeperTarget {
-            beeperTarget = want
-            beeperAttempts = 0
+    /// Usa el daemon propio si está activo. Si no, el de la otra build si está
+    /// corriendo (para no competir con él por el USB). Si no hay ninguno, el monitor local.
+    private func chooseBackend() async -> (BackendKind, String?) {
+        if daemon.isEnabled { return (.daemon, daemon.label) }
+        if backendKind == .daemon, let label = daemonLabelInUse, label != daemon.label, daemonFailures < 3 {
+            return (.daemon, label)
         }
-        guard !beeperSyncing, beeperAttempts < Self.maxBeeperAttempts else { return }
-        if !force, let s = status, s.beeperOn == want { return }
-
-        beeperSyncing = true
-        defer { beeperSyncing = false }
-        beeperAttempts += 1
-        let label = want ? "activada" : "desactivada"
-        do {
-            let before = status?.beeperOn
-            let now = try await ups.setBeeper(enabled: want)
-            status?.beeperOn = now
-            if now == want {
-                if before != now { log.write("Alarma sonora \(label) según los ajustes") }
-                beeperAttempts = 0
-                beeperSyncError = nil
-            } else if beeperAttempts >= Self.maxBeeperAttempts {
-                beeperSyncError = "La UPS no aceptó el cambio de alarma"
-                log.write("ERROR: la UPS no aceptó dejar la alarma \(label)")
-            }
-        } catch {
-            if beeperAttempts >= Self.maxBeeperAttempts {
-                beeperSyncError = String(describing: error)
-                log.write("ERROR al ajustar la alarma sonora: \(error)")
+        if backendKind != .local || Date.now.timeIntervalSince(lastProbe) >= 15 {
+            lastProbe = .now
+            for label in DaemonIdentity.allLabels where label != daemon.label {
+                if await DaemonBackend.isReachable(label: label) { return (.daemon, label) }
             }
         }
+        return (.local, nil)
     }
 
-    private func logReading(_ s: UPSStatus) {
-        // Cada 60 s con luz; en cada consulta durante un corte (sirve para calibrar la curva).
-        guard s.onBattery || Date.now.timeIntervalSince(lastReadingLogged) >= 60 else { return }
-        lastReadingLogged = .now
-        log.write(String(
-            format: "LECTURA ent=%.1fV sal=%.1fV carga=%d%% bat=%.2fV (%d%%) frec=%.1fHz bits=%@",
-            s.inputVoltage, s.outputVoltage, s.loadPercent, s.batteryVoltage, s.batteryPercent,
-            s.frequency, s.statusBitsString
-        ))
+    private func switchBackend(to kind: BackendKind, label: String?) async {
+        // Primero soltar el anterior: el monitor local libera el USB para el daemon.
+        await backend?.stop()
+        let new: MonitorBackend = if kind == .daemon, let label {
+            DaemonBackend(label: label)
+        } else {
+            LocalBackend(settings: AppSettings.monitorSettings)
+        }
+        await new.start()
+        backend = new
+        backendKind = kind
+        daemonLabelInUse = label
+        daemonFailures = 0
+        lastEventID = -1      // no repetir eventos viejos del nuevo backend
+        lastPushed = nil      // enviarle los ajustes de esta app
+        warningPanel.close()
+    }
+
+    private func pushSettingsIfNeeded() async {
+        guard let backend else { return }
+        let current = AppSettings.monitorSettings
+        guard current != lastPushed else { return }
+        do {
+            try await backend.update(settings: current)
+            lastPushed = current
+        } catch {
+            backendError = String(describing: error)
+        }
+    }
+
+    private func apply(_ snap: MonitorSnapshot) {
+        status = snap.status
+        link = snap.link
+        phase = snap.phase
+        protocolVariant = snap.protocolVariant
+        lastError = snap.lastError
+        beeperSyncing = snap.beeperSyncing
+        beeperSyncError = snap.beeperSyncError
+        logURL = URL(fileURLWithPath: snap.logPath)
+        for recorded in snap.events { handle(recorded, link: snap.link) }
+        lastEventID = snap.lastEventID
+        if !phase.isWarning { warningPanel.close() }
     }
 
     // MARK: - Eventos
 
-    private func handle(_ events: [MonitorEvent]) {
-        for event in events {
-            switch event {
-            case .outageConfirmed:
-                log.write("CORTE de luz confirmado")
-                notifier.post("Corte de luz", "La Mac está funcionando con la batería de la UPS.")
+    private func handle(_ recorded: RecordedEvent, link: LinkState) {
+        switch recorded.event {
+        case .monitor(.outageConfirmed):
+            notifier.post("Corte de luz", "La Mac está funcionando con la batería de la UPS.")
 
-            case .powerRestored(let duration, let cancelled):
-                log.write("VOLVIÓ la luz tras \(duration.durationText)" + (cancelled ? " (apagado cancelado)" : ""))
-                warningPanel.close()
-                notifier.post("Volvió la luz", "El corte duró \(duration.durationText)."
-                    + (cancelled ? " Se canceló el apagado." : ""))
+        case .monitor(.powerRestored(let duration, let cancelled)):
+            warningPanel.close()
+            notifier.post("Volvió la luz", "El corte duró \(duration.durationText)."
+                + (cancelled ? " Se canceló el apagado." : ""))
 
-            case .warningStarted(let reason, let deadline):
-                let secs = Int(deadline.timeIntervalSinceNow.rounded())
-                log.write("AVISO de apagado en \(secs) s: \(reason)")
-                notifier.post("La Mac se apagará en \(secs) s", "\(reason). Guarda tu trabajo.", urgent: true)
-                warningPanel.show(monitor: self)
-                startTicking()
+        case .monitor(.warningStarted(let reason, let deadline)):
+            let secs = max(Int(deadline.timeIntervalSinceNow.rounded()), 0)
+            notifier.post("La Mac se apagará en \(secs) s", "\(reason). Guarda tu trabajo.", urgent: true)
+            warningPanel.show(monitor: self)
 
-            case .warningAborted:
-                log.write("Aviso de apagado suspendido: sin comunicación con la UPS")
-                warningPanel.close()
+        case .monitor(.warningAborted):
+            warningPanel.close()
+            notifier.post("Apagado suspendido", "Se perdió la comunicación con la UPS; la Mac no se apagará.")
 
-            case .postponed(let until):
-                log.write("Apagado pospuesto hasta \(until.formatted(date: .omitted, time: .shortened))")
-                warningPanel.close()
+        case .monitor(.postponed):
+            warningPanel.close()
 
-            case .shutdownNow(let reason):
-                warningPanel.close()
-                performShutdown(reason)
+        case .monitor(.shutdownNow(let reason)):
+            warningPanel.close()
+            // Un evento viejo (la app estuvo suspendida) no debe apagar la Mac.
+            guard Date.now.timeIntervalSince(recorded.date) < 60 else { return }
+            performOrderedShutdown(reason)
 
-            case .communicationLost:
-                link = link == .searching ? .searching : .lost
-                log.write("SIN COMUNICACIÓN con la UPS: \(lastError ?? "?")")
-                notifier.post(
-                    link == .searching ? "UPS no detectada" : "Sin comunicación con la UPS",
-                    "Revisa el cable USB o el dock. La Mac no se apagará mientras no haya datos."
-                )
+        case .monitor(.communicationLost):
+            notifier.post(
+                link == .searching ? "UPS no detectada" : "Sin comunicación con la UPS",
+                "Revisa el cable USB o el dock. La Mac no se apagará mientras no haya datos."
+            )
 
-            case .communicationRestored:
-                log.write("Comunicación con la UPS restablecida")
-                notifier.post("UPS conectada", "Se restableció la comunicación con la UPS.")
-            }
-        }
-        phase = engine.phase
-    }
+        case .monitor(.communicationRestored):
+            notifier.post("UPS conectada", "Se restableció la comunicación con la UPS.")
 
-    private func startTicking() {
-        tickTask?.cancel()
-        tickTask = Task {
-            while engine.phase.isWarning && !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                handle(engine.tick(at: .now))
-            }
+        case .shutdownIncomplete:
+            notifier.post("La Mac no se apagó", "Alguna app bloqueó el apagado. Se volverá a avisar.", urgent: true)
+
+        case .shutdownForced:
+            notifier.post("Apagado forzado", "El apagado ordenado no se completó; el servicio apaga la Mac.", urgent: true)
         }
     }
 
-    private func performShutdown(_ reason: ShutdownReason) {
-        log.write("APAGANDO la Mac: \(reason)")
+    /// Apagado ordenado desde la sesión del usuario (como "Apagar…" del menú Apple).
+    /// Con el daemon activo, si no se completa, el daemon lo fuerza a los 90 s.
+    private func performOrderedShutdown(_ reason: ShutdownReason) {
         do {
             try SystemShutdown.shutDown()
         } catch {
-            log.write("ERROR al ordenar el apagado: \(error)")
             notifier.post("No se pudo apagar la Mac", String(describing: error), urgent: true)
-        }
-        // Si en 2 min seguimos vivos, alguna app bloqueó el apagado: volver a avisar.
-        Task {
-            try? await Task.sleep(for: .seconds(120))
-            guard case .shuttingDown = engine.phase else { return }
-            log.write("El apagado no se completó; se volverá a avisar")
-            engine.shutdownDidNotComplete()
-            phase = engine.phase
         }
     }
 }

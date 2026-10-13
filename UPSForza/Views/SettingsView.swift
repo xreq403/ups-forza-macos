@@ -38,6 +38,8 @@ struct SettingsView: View {
                 }
             }
 
+            DaemonSection()
+
             Section("Sistema") {
                 LoginItemToggle()
                 LabeledContent("Notificaciones") {
@@ -45,7 +47,7 @@ struct SettingsView: View {
                 }
                 LabeledContent("Registro") {
                     Button("Mostrar en Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([EventLog.shared.url])
+                        NSWorkspace.shared.activateFileViewerSelecting([monitor.logURL])
                     }
                 }
             }
@@ -100,6 +102,66 @@ struct LoginItemToggle: View {
                 self.error = error.localizedDescription
                 enabled = SMAppService.mainApp.status == .enabled
             }
+        }
+    }
+}
+
+/// Servicio en segundo plano (daemon root): estado, activación y aprobación.
+struct DaemonSection: View {
+    @Environment(UPSMonitor.self) private var monitor
+
+    var body: some View {
+        let daemon = monitor.daemon
+        Section {
+            LabeledContent {
+                switch daemon.state {
+                case .enabled:
+                    Button("Desactivar") { Task { await daemon.unregister() } }
+                case .requiresApproval:
+                    Button("Abrir Ajustes del Sistema") { daemon.openSystemSettings() }
+                case .notRegistered, .notFound:
+                    Button("Activar") { daemon.register() }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(dotColor).frame(width: 8, height: 8)
+                    Text(stateText)
+                }
+                Text(detailText)
+                if let error = daemon.lastError ?? (monitor.backendKind == .daemon ? monitor.backendError : nil) {
+                    Text(error).foregroundStyle(Color.dangerRed)
+                }
+            }
+        } header: {
+            Text("Servicio en segundo plano")
+        } footer: {
+            Text("Con el servicio activo, la UPS se vigila con privilegios de administrador aunque no haya ninguna sesión abierta, y si una app bloquea el apagado, se fuerza a los 90 s. Sin el servicio, esta app vigila la UPS mientras está abierta.")
+        }
+    }
+
+    private var stateText: String {
+        switch monitor.daemon.state {
+        case .enabled: monitor.backendError == nil ? "Activo" : "Activo, sin respuesta"
+        case .requiresApproval: "Esperando aprobación"
+        case .notRegistered: "Desactivado"
+        case .notFound: "No disponible"
+        }
+    }
+
+    private var detailText: String {
+        switch monitor.daemon.state {
+        case .enabled: "La UPS la vigila el servicio."
+        case .requiresApproval: "Apruébalo en Ajustes del Sistema → General → Ítems de inicio y extensiones."
+        case .notRegistered: "La UPS la vigila esta app mientras está abierta."
+        case .notFound: "No se encontró el servicio dentro de la app."
+        }
+    }
+
+    private var dotColor: Color {
+        switch monitor.daemon.state {
+        case .enabled: monitor.backendError == nil ? .batteryGreen : .warningAmber
+        case .requiresApproval: .warningAmber
+        case .notRegistered, .notFound: .secondary
         }
     }
 }

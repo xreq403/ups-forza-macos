@@ -16,7 +16,7 @@ public struct ShutdownPolicy: Codable, Equatable, Sendable {
     public init() {}
 }
 
-public enum ShutdownReason: Equatable, Sendable, CustomStringConvertible {
+public enum ShutdownReason: Codable, Equatable, Sendable, CustomStringConvertible {
     case upsBatteryLow
     case batteryBelow(percent: Int, threshold: Int)
     case timeOnBattery(minutes: Int)
@@ -32,7 +32,7 @@ public enum ShutdownReason: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
-public enum PowerPhase: Equatable, Sendable {
+public enum PowerPhase: Codable, Equatable, Sendable {
     /// Todavía sin lecturas.
     case unknown
     case online
@@ -54,7 +54,7 @@ public enum PowerPhase: Equatable, Sendable {
     }
 }
 
-public enum MonitorEvent: Equatable, Sendable {
+public enum MonitorEvent: Codable, Equatable, Sendable {
     case outageConfirmed(since: Date)
     case powerRestored(outageDuration: TimeInterval, shutdownCancelled: Bool)
     case warningStarted(reason: ShutdownReason, deadline: Date)

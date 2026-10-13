@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.xreq403.UPSForza.debug.daemon</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/UPSForzaDaemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>UPSForzaDaemon</string>
+		<string>com.xreq403.UPSForza.debug.daemon</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.xreq403.UPSForza.debug.daemon</key>
+		<true/>
+	</dict>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.xreq403.UPSForza.debug</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+</dict>
+</plist>

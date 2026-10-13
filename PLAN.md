@@ -26,15 +26,15 @@ El código Python (`discovery/forza_ups.py`) queda como **referencia** del proto
 - **USB HID:** IOKit nativo (`IOHIDManager`), sin hidapi.
   - No necesita drivers ni permisos, porque la página de uso es `0xFF00`, definida por el fabricante.
   - Los callbacks de conexión y desconexión resuelven el caso del dock desconectado.
-- **Sin App Sandbox** y fuera del App Store. Firma *ad-hoc* (*Sign to Run Locally*), o con Apple ID de desarrollador eligiendo el *Team* en Xcode.
+- **Sin App Sandbox** y fuera del App Store. Firma manual con el certificado **Apple Development** del equipo `L77R5X2WV6` (Eduardo Torres). La firma con equipo es obligatoria para el daemon: la app y el daemon validan entre sí su firma.
 - **Apagado de la Mac:**
   - Fase 1: AppleEvent `kAEShutDown` a `loginwindow`, que es un apagado ordenado. Si falla, usa `osascript` a System Events.
   - Requiere el entitlement `com.apple.security.automation.apple-events`, por el runtime endurecido.
-  - Fase 2: daemon root vía `SMAppService` para el apagado forzado.
+  - Fase 2: el daemon root fuerza `shutdown -h now` si el apagado ordenado no se completa en 90 s, o de inmediato si no hay sesión con la app abierta.
 - **Arranque automático:** ítem de inicio de sesión con `SMAppService.mainApp`, activable en Ajustes. Reemplaza el `LaunchAgent` del spec.
 - **Ajustes:** en `UserDefaults` y editables desde la UI. Reemplaza el `config.toml` del spec.
 - **Notificaciones:** `UNUserNotificationCenter`. El aviso de apagado es *time sensitive*.
-- **Registro:** `~/Library/Logs/ups-forza.log` con los eventos y las lecturas.
+- **Registro:** `/Library/Logs/UPSForza/ups-forza.log` con el daemon activo; `~/Library/Logs/ups-forza.log` en modo local. Eventos y lecturas.
   - Las lecturas se guardan cada 60 s con luz y en cada consulta durante un corte, lo que sirve para calibrar la curva.
   - Rota a `ups-forza.1.log` al superar 5 MB.
 
@@ -56,6 +56,39 @@ Los bundle id distintos evitan que macOS mezcle las dos copias, por ejemplo en e
 
 ## 2. Arquitectura
 
+### Daemon root y app
+
+```
+UPSForza.app
+├── Contents/MacOS/UPSForza            app (UI): popover, ajustes, notificaciones, aviso, apagado ordenado
+├── Contents/MacOS/UPSForzaDaemon      daemon root: lee la UPS, aplica la política, fuerza el apagado
+└── Contents/Library/LaunchDaemons/    com.xreq403.UPSForza[.debug].daemon.plist (SMAppService)
+
+App ──XPC (JSON)──▶ Daemon:  snapshot (estado + eventos), ajustes, posponer, apagar ahora
+```
+
+- **Núcleo compartido (`MonitorCore`):** el sondeo, la política, la alarma, el registro y la ejecución del apagado viven en `UPSKit`, sin UI. Lo usan el daemon y, como respaldo, la app.
+- **Quién monitorea:**
+  - El daemon, si está activo.
+  - Si no, el daemon de la otra build (Release/Debug) si está corriendo.
+  - Si no, la app en modo local.
+  - **Nunca dos a la vez**, para no competir por el USB.
+- **La app es cliente:** consulta el snapshot cada 1 s, envía los ajustes (`UserDefaults` → daemon) y reacciona a los eventos con notificaciones, el panel de aviso y el apagado ordenado. Los eventos tienen id; al conectarse no se repiten los viejos, y un `shutdownNow` de hace más de 60 s se ignora.
+- **Apagado con daemon:**
+  - La app intenta el apagado ordenado.
+  - Si a los 90 s la Mac sigue encendida, el daemon ejecuta `shutdown -h now`.
+  - Sin app conectada en los últimos 10 s (sin sesión, o con la app cerrada), el daemon apaga directamente al vencer el aviso.
+- **Seguridad XPC:**
+  - El daemon solo acepta clientes que cumplan el requisito: firma Apple, OU `L77R5X2WV6` e identificador de la app (Release o Debug).
+  - La app solo acepta el daemon con identificador `com.xreq403.UPSForza.daemon` del mismo equipo.
+- **Ajustes del daemon:** se guardan en `/Library/Application Support/UPSForza/settings.json` para funcionar sin sesión. En el primer arranque, sin ajustes guardados, el daemon no toca la alarma hasta recibir los del usuario.
+- **Actualización:** al reinstalar la app, el daemon detecta que su ejecutable cambió (inodo y fecha, vía `proc_pidpath`) y sale. launchd (`KeepAlive`) levanta la versión nueva en menos de 60 s.
+- **Activación:**
+  - En Ajustes → *Servicio en segundo plano* → *Activar*. Después hay que aprobarlo en Ajustes del Sistema → General → Ítems de inicio y extensiones.
+  - La primera vez `register()` devuelve "Operation not permitted" hasta que se aprueba. Es esperable.
+
+### Archivos
+
 ```
 UPSForza.xcodeproj          proyecto de la app (esquemas UPSForza, UPSKit, upsctl)
 UPSForza/                   app de barra de menús, SwiftUI (carpeta sincronizada)
@@ -64,7 +97,8 @@ UPSForza/                   app de barra de menús, SwiftUI (carpeta sincronizad
 ├── AppSettings.swift          claves y valores por defecto
 ├── Assets.xcassets            AppIcon
 ├── Views/                     popover, ajustes, aviso de apagado
-└── System/                    notificaciones, apagado, log
+└── System/                    notificaciones, apagado, backends (local / XPC), registro del daemon
+UPSForzaDaemon/main.swift   daemon root: XPC, ajustes persistidos, apagado forzado, autoactualización
 UPSKit/                     paquete local Swift (sin UI, testeable)
 ├── Package.swift
 ├── Sources/UPSKit/
@@ -73,11 +107,15 @@ UPSKit/                     paquete local Swift (sin UI, testeable)
 │   ├── BatteryEstimator.swift curva de plomo-ácido 24 V
 │   ├── HIDTransport.swift     IOHIDManager, reports de 8 bytes
 │   ├── ForzaUPS.swift         comandos M, QS, Q, T, C, S<n> + setBeeper
-│   └── ShutdownEngine.swift   máquina de estados de la política de apagado
+│   ├── ShutdownEngine.swift   máquina de estados de la política de apagado
+│   ├── MonitorCore.swift      núcleo de monitoreo compartido (daemon y app)
+│   ├── DaemonProtocol.swift   interfaz XPC e identidades de firma
+│   └── EventLog.swift         registro en archivo
 ├── Sources/upsctl/         CLI equivalente a forza_ups.py, para probar el hardware
-└── Tests/UPSKitTests/      parser, curva, consumo y política (27 tests)
+└── Tests/UPSKitTests/      parser, curva, consumo, política y núcleo con UPS simulada (36 tests)
 Support/UPSForza.entitlements  automation.apple-events (runtime endurecido)
 Support/forza-logo.svg      logo fuente del ícono
+Support/LaunchDaemons/      plists de launchd del daemon (Release y Debug)
 scripts/build-app.sh        xcodebuild Release → build/UPSForza.app (--install a /Applications)
 scripts/make-app-icon.swift genera AppIcon desde el SVG
 discovery/                  scripts Python de diagnóstico (referencia)
@@ -100,6 +138,7 @@ discovery/                  scripts Python de diagnóstico (referencia)
   - Umbrales de apagado y aviso previo.
   - Intervalo de consulta.
   - Abrir al iniciar sesión.
+  - Servicio en segundo plano: estado, activar o desactivar y aprobación.
   - Notificación de prueba y mostrar el registro.
   - Alarma sonora, sincronizada con el control del popover.
   - Datos de la UPS: protocolo y valores nominales.
@@ -113,7 +152,7 @@ Estados: `unknown → online ⇄ onBattery → warning → shuttingDown`.
 - **Aviso:** cuenta regresiva (60 s por defecto) con *Apagar ahora* o *Posponer 5 min*. Con batería baja de la UPS no se puede posponer.
 - **Vuelve la luz:** se cancela el aviso y se notifica la duración del corte.
 - **Sin comunicación** (2 fallas seguidas): se notifica, se aborta el aviso y **no se apaga**.
-- **Apagado bloqueado:** si 2 minutos después de ordenar el apagado la Mac sigue encendida (alguna app lo bloqueó), se vuelve a avisar.
+- **Apagado bloqueado:** con el daemon, se fuerza a los 90 s. Sin el daemon (modo local), si 2 minutos después la Mac sigue encendida, se vuelve a avisar.
 
 ### Alarma sonora
 
@@ -155,13 +194,15 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
 - [x] Prueba de apagado real (2026-10-13): aviso a los 2 min sin luz, apagado a los 60 s y la Mac se apagó correctamente
 
 ### Fase 2 — App completa
+- [x] Daemon root (`SMAppService.daemon` + XPC): monitoreo con privilegios, apagado forzado y funcionamiento sin sesión abierta (2026-10-13)
+- [x] Prueba del apagado forzado (2026-10-13): con una app bloqueando el apagado ordenado, el daemon apagó la Mac a los 90 s. El registro ahora se vacía antes del `shutdown`, porque la línea del apagado forzado se perdía
+- [ ] Prueba sin sesión: cerrar sesión, cortar la luz y verificar que el daemon apague
 - [ ] Ventana principal con dashboard y gráficos en vivo (Swift Charts)
 - [ ] Historial de eventos de la red (SwiftData), con exportación a CSV:
   - **Cortes de luz:** inicio, duración y voltaje mínimo de batería.
   - **Activaciones del AVR:** inicio, duración, tipo (*buck* si la salida es menor que la entrada, *boost* si es mayor) y voltajes de entrada y salida. Mide qué tan estable es la red.
   - **Resumen por día y semana:** cantidad de cortes, tiempo total sin luz, cantidad de activaciones del AVR, tiempo total con AVR y rango de voltaje de entrada (mín. y máx.).
 - [ ] Controles: test de batería (`T`), cancelar apagado (`C`) y apagar la UPS con `S<n>`, con confirmación
-- [ ] Helper daemon root (`SMAppService.daemon` + XPC): apagado forzado y funcionamiento sin sesión abierta
 
 ### Fase 3 — Extras
 - [ ] Estimación de autonomía por la pendiente del voltaje
@@ -181,10 +222,19 @@ cd UPSKit && swift test             # tests sin Xcode
 cd UPSKit && swift run upsctl       # estado de la UPS (también --json, --loop N, raw CMD, beeper on|off)
 ```
 
-Antes de usar `upsctl`, conviene cerrar la app, para que no compitan por el USB.
+Antes de usar `upsctl`, conviene cerrar la app y desactivar el servicio, para que no compitan por el USB.
+
+**Daemon:**
+
+```bash
+sudo launchctl print system/com.xreq403.UPSForza.daemon   # estado en launchd
+tail -f /Library/Logs/UPSForza/ups-forza.log               # registro del daemon
+```
 
 ### Problemas conocidos
 
+- **Aislamiento en `UPSForzaDaemon/main.swift`:** en Swift 6, el código de nivel superior está aislado al MainActor. Un closure de ahí que se ejecuta en otra cola (p. ej. un `DispatchSource` en `.global()`) aborta el proceso con `dispatch_assert_queue_fail`. Pasó el 2026-10-13 y el daemon se reiniciaba cada 60 s. Los temporizadores van en `.main`, y las funciones que llama `MonitorCore` se declaran `nonisolated`.
+- **"Operation not permitted" al activar el servicio:** es la respuesta normal de `register()` antes de la aprobación. Al aprobarlo queda *Activo*.
 - **Ícono gris en las notificaciones:** macOS asocia las notificaciones con la copia de la app que registró primero el bundle id.
   - El build script saca del registro las copias intermedias de DerivedData.
   - Si persiste, reiniciar el servicio con `killall usernoted NotificationCenter`.
@@ -203,5 +253,8 @@ Antes de usar `upsctl`, conviene cerrar la app, para que no compitan por el USB.
 | macOS mínimo | 14 | Tomada |
 | Variante del ícono | Azul con la F blanca | Tomada |
 | Apagar la UPS con `S<n>` | No (Fase 2, tras probar los comandos) | Pendiente |
-| Modelo de Mac (portátil o escritorio) | — | Pendiente: si es de escritorio, adelantar el daemon root |
+| Modelo de Mac | Mac mini M4 Pro (escritorio) → daemon root primero | Tomada |
+| Arquitectura del daemon | Dueño del monitoreo; la app es la UI | Tomada |
+| Firma | Apple Development, equipo `L77R5X2WV6` | Tomada |
+| Margen antes de forzar el apagado | 90 s | Tomada |
 | Calibración de la curva | Curva del spec | Pendiente: prueba de descarga de 10–15 min |
