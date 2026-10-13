@@ -1,7 +1,6 @@
 # UPS Forza NT-2402PRO — Monitor y apagado automático para macOS
 
 > Especificación de hallazgos y objetivo del proyecto. Las decisiones de tecnología, la arquitectura y el avance están en [PLAN.md](PLAN.md).
-> Carpeta del proyecto: `/Users/etorres/develop/claude/ups-forza`
 > Última actualización: 2026-10-12
 
 ---

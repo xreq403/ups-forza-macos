@@ -1,10 +1,21 @@
-venv/
-.build/
-build/
-.swiftpm/
-*.xcodeproj/xcuserdata/
+# macOS
 .DS_Store
-__pycache__/
-*.jsonl
-*.xcworkspace/xcuserdata/
+
+# Xcode: estado personal del usuario (ventanas, breakpoints, búsquedas)
+xcuserdata/
+*.xcuserstate
 DerivedData/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Builds locales (scripts/build-app.sh)
+build/
+
+# Python (discovery/)
+venv/
+__pycache__/
+
+# Registros de lecturas (upsctl --json, forza_ups.py --json)
+*.jsonl
