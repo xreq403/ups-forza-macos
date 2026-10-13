@@ -1,0 +1,10 @@
+venv/
+.build/
+build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+.DS_Store
+__pycache__/
+*.jsonl
+*.xcworkspace/xcuserdata/
+DerivedData/
