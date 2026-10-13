@@ -27,6 +27,8 @@ final class UPSMonitor {
     private(set) var backendKind: BackendKind = .none
     /// El daemon está activo pero no responde.
     private(set) var backendError: String?
+    /// Cambia al borrar el historial, para que las vistas lo recarguen.
+    private(set) var historyRevision = 0
 
     /// Alarma sonora deseada. Se guarda en los ajustes y se envía al monitor.
     var beeperEnabled: Bool = AppSettings.beeperEnabled {
@@ -70,6 +72,21 @@ final class UPSMonitor {
 
     func shutdownNow() {
         Task { try? await backend?.shutdownNow(); await refresh() }
+    }
+
+    /// Historial de los últimos `days` días desde el backend activo.
+    func loadHistory(days: Int) async throws -> HistorySnapshot {
+        guard let backend else { throw DaemonBackendError.noProxy }
+        return try await backend.history(days: days)
+    }
+
+    /// Borra el historial del backend activo y, si se pide, también los registros
+    /// de texto (el del backend y, con el daemon, el de la app en modo local).
+    func clearHistory(includeLogs: Bool) async throws {
+        guard let backend else { throw DaemonBackendError.noProxy }
+        try await backend.clearHistory(includeLogs: includeLogs)
+        if includeLogs && backendKind == .daemon { EventLog(url: EventLog.userLogURL).clear() }
+        historyRevision += 1
     }
 
     func sendTestNotification() {

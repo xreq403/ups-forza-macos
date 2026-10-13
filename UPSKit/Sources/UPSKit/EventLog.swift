@@ -23,6 +23,15 @@ public final class EventLog: Sendable {
         queue.sync {}
     }
 
+    /// Borra el registro y su copia rotada.
+    public func clear() {
+        let url = self.url
+        queue.sync {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: url.deletingPathExtension().appendingPathExtension("1.log"))
+        }
+    }
+
     public func write(_ message: String) {
         logger.info("\(message, privacy: .public)")
         let date = Date()

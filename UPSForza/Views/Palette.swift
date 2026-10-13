@@ -15,6 +15,11 @@ extension Color {
     /// Apagado / batería baja / falla. Rojo profundo con buen contraste para texto blanco.
     static let dangerRed = Color(light: 0xB3261E, dark: 0xC62828)
 
+    /// Gráficos del historial (validados con el chequeo de paleta en claro y oscuro):
+    /// tiempo sin luz y activaciones del AVR.
+    static let chartOutage = Color(light: 0xB86E00, dark: 0xC98000)
+    static let chartAVR = Color(light: 0x0A64C8, dark: 0x3B8EEA)
+
     init(light: UInt32, dark: UInt32) {
         self.init(nsColor: NSColor(name: nil) { appearance in
             let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light

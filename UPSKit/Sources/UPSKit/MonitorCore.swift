@@ -115,6 +115,8 @@ public actor MonitorCore {
     private var nextEventID = 1
     private static let maxEvents = 200
 
+    private let history: HistoryStore?
+    private let importLogs: [URL]
     private var loopTask: Task<Void, Never>?
     private var polling = false
     private var lastReadingLogged = Date.distantPast
@@ -124,8 +126,12 @@ public actor MonitorCore {
         settings: MonitorSettings,
         log: EventLog,
         forced: ForcedShutdown,
-        enforceBeeper: Bool = true
+        enforceBeeper: Bool = true,
+        historyURL: URL? = nil,
+        importLogs: [URL] = []
     ) {
+        self.history = historyURL.map(HistoryStore.init)
+        self.importLogs = importLogs
         self.device = device
         self.settings = settings
         self.beeperEnforced = enforceBeeper
@@ -139,6 +145,7 @@ public actor MonitorCore {
     public func start() {
         guard loopTask == nil else { return }
         log.write("Inicio del monitor")
+        importHistoryIfNeeded()
         device.start { [weak self] connected in
             Task { await self?.connectionChanged(connected) }
         }
@@ -160,9 +167,31 @@ public actor MonitorCore {
         loopTask?.cancel()
         loopTask = nil
         device.stop()
+        history?.checkpoint()
     }
 
     // MARK: API
+
+    /// Historial de los últimos `days` días.
+    public func history(days: Int) -> HistorySnapshot {
+        history?.snapshot(since: Date.now.addingTimeInterval(-Double(days) * 86_400)) ?? HistorySnapshot()
+    }
+
+    /// Borra el historial y, si se pide, el registro de texto.
+    public func clearHistory(includeLogs: Bool) {
+        history?.clear()
+        if includeLogs { log.clear() }
+        log.write(includeLogs ? "Historial y registro borrados por el usuario" : "Historial borrado por el usuario")
+    }
+
+    /// Primer uso del historial: reconstruirlo a partir de los registros de texto.
+    private func importHistoryIfNeeded() {
+        guard let history, history.isNew else { return }
+        let texts = importLogs.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+        let lines = LogImporter.lines(fromLogs: texts)
+        history.importLines(lines)
+        log.write("Historial creado; \(lines.count) registros importados de \(texts.count) archivos de registro")
+    }
 
     public func snapshot(since eventID: Int) -> MonitorSnapshot {
         MonitorSnapshot(
@@ -221,6 +250,7 @@ public actor MonitorCore {
             link = .connected
             logReading(s)
             handle(engine.ingest(s, at: .now))
+            history?.ingest(s, at: .now)
             if beeperEnforced && s.beeperOn != settings.beeperEnabled { await syncBeeper() }
         } catch {
             lastError = String(describing: error)
@@ -296,9 +326,11 @@ public actor MonitorCore {
     private func handle(_ monitorEvents: [MonitorEvent]) {
         for event in monitorEvents {
             switch event {
-            case .outageConfirmed:
+            case .outageConfirmed(let since):
+                history?.outageStarted(at: since)
                 log.write("CORTE de luz confirmado")
             case .powerRestored(let duration, let cancelled):
+                history?.outageEnded(at: .now)
                 log.write("VOLVIÓ la luz tras \(duration.durationText)" + (cancelled ? " (apagado cancelado)" : ""))
             case .warningStarted(let reason, let deadline):
                 log.write("AVISO de apagado en \(Int(deadline.timeIntervalSinceNow.rounded())) s: \(reason)")
@@ -307,6 +339,7 @@ public actor MonitorCore {
             case .postponed(let until):
                 log.write("Apagado pospuesto hasta \(until.formatted(date: .omitted, time: .shortened))")
             case .shutdownNow(let reason):
+                history?.shutdown(reason: reason, at: .now)
                 log.write("APAGANDO la Mac: \(reason)")
             case .communicationLost:
                 if link == .connected { link = .lost }
@@ -327,6 +360,7 @@ public actor MonitorCore {
                 guard case .shuttingDown = engine.phase else { return }
                 log.write("El apagado no se completó; se volverá a avisar")
                 engine.shutdownDidNotComplete()
+                history?.shutdownCancelled()
                 record(.shutdownIncomplete)
             }
         case .available(let grace, let hasActiveClient, let execute):

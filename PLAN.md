@@ -96,7 +96,7 @@ UPSForza/                   app de barra de menús, SwiftUI (carpeta sincronizad
 ├── UPSMonitor.swift           polling, eventos, alarma sonora, acciones
 ├── AppSettings.swift          claves y valores por defecto
 ├── Assets.xcassets            AppIcon
-├── Views/                     popover, ajustes, aviso de apagado
+├── Views/                     popover, ajustes, aviso de apagado, historial (Swift Charts)
 └── System/                    notificaciones, apagado, backends (local / XPC), registro del daemon
 UPSForzaDaemon/main.swift   daemon root: XPC, ajustes persistidos, apagado forzado, autoactualización
 UPSKit/                     paquete local Swift (sin UI, testeable)
@@ -110,9 +110,11 @@ UPSKit/                     paquete local Swift (sin UI, testeable)
 │   ├── ShutdownEngine.swift   máquina de estados de la política de apagado
 │   ├── MonitorCore.swift      núcleo de monitoreo compartido (daemon y app)
 │   ├── DaemonProtocol.swift   interfaz XPC e identidades de firma
+│   ├── History.swift          historial (JSONL) y resumen por día
+│   ├── LogImporter.swift      reconstruye el historial desde los registros de texto
 │   └── EventLog.swift         registro en archivo
 ├── Sources/upsctl/         CLI equivalente a forza_ups.py, para probar el hardware
-└── Tests/UPSKitTests/      parser, curva, consumo, política y núcleo con UPS simulada (36 tests)
+└── Tests/UPSKitTests/      parser, curva, consumo, política, núcleo con UPS simulada e historial (46 tests)
 Support/UPSForza.entitlements  automation.apple-events (runtime endurecido)
 Support/forza-logo.svg      logo fuente del ícono
 Support/LaunchDaemons/      plists de launchd del daemon (Release y Debug)
@@ -153,6 +155,17 @@ Estados: `unknown → online ⇄ onBattery → warning → shuttingDown`.
 - **Vuelve la luz:** se cancela el aviso y se notifica la duración del corte.
 - **Sin comunicación** (2 fallas seguidas): se notifica, se aborta el aviso y **no se apaga**.
 - **Apagado bloqueado:** con el daemon, se fuerza a los 90 s. Sin el daemon (modo local), si 2 minutos después la Mac sigue encendida, se vuelve a avisar.
+
+### Historial
+
+- **Dónde vive:** lo registra `MonitorCore`, así que el daemon lo guarda aunque no haya sesión. Se guarda en `HistoryStore` (`UPSKit/History.swift`), un archivo **JSONL de solo agregar**:
+  - con el daemon: `/Library/Application Support/UPSForza/history.jsonl`,
+  - en modo local: `~/Library/Application Support/UPSForza/history.jsonl`.
+- **Por qué no SwiftData:** el dueño es el daemon root, y la app no puede abrir de forma segura una base SQLite que otro proceso escribe. La app pide el historial por XPC (`history(days:)`).
+- **Cuándo escribe:** al empezar y terminar cada episodio, al ordenar el apagado (antes del `shutdown`, para que el corte quede cerrado aunque la Mac se apague) y cada 10 min durante episodios en curso.
+- **Mantenimiento:** al cargar se compacta (la última versión de cada episodio gana) y se descarta lo de más de 365 días.
+- **Episodios sin cerrar** (el monitor se detuvo a mitad de un corte): se muestran "sin cierre".
+- **Importación:** `LogImporter` reconstruye cortes (de "CORTE"/"VOLVIÓ"/"APAGANDO"), AVR (del bit b5 de las lecturas) y voltaje diario a partir de `ups-forza.log`. El daemon importa su registro y los de la app de cada usuario.
 
 ### Alarma sonora
 
@@ -198,10 +211,17 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
 - [x] Prueba del apagado forzado (2026-10-13): con una app bloqueando el apagado ordenado, el daemon apagó la Mac a los 90 s. El registro ahora se vacía antes del `shutdown`, porque la línea del apagado forzado se perdía
 - [ ] Prueba sin sesión: cerrar sesión, cortar la luz y verificar que el daemon apague
 - [ ] Ventana principal con dashboard y gráficos en vivo (Swift Charts)
-- [ ] Historial de eventos de la red (SwiftData), con exportación a CSV:
-  - **Cortes de luz:** inicio, duración y voltaje mínimo de batería.
-  - **Activaciones del AVR:** inicio, duración, tipo (*buck* si la salida es menor que la entrada, *boost* si es mayor) y voltajes de entrada y salida. Mide qué tan estable es la red.
-  - **Resumen por día y semana:** cantidad de cortes, tiempo total sin luz, cantidad de activaciones del AVR, tiempo total con AVR y rango de voltaje de entrada (mín. y máx.).
+- [x] Historial de eventos de la red (2026-10-13), con exportación a CSV:
+  - **Cortes de luz:** inicio, fin, voltaje y % mínimos de batería, consumo máximo y, si terminó con la Mac apagada, el motivo.
+  - **Activaciones del AVR:** inicio, fin, tipo (*reducción* si la salida es menor que la entrada, *elevación* si es mayor) y voltajes de entrada y salida.
+  - **Voltaje de la red por día:** mínimo, promedio y máximo de la entrada (solo con luz).
+  - **Ventana Historial** (popover → *Historial...*):
+    - resumen del período (7 / 30 / 90 días),
+    - gráficos de tiempo sin luz y de activaciones del AVR por día,
+    - lista de episodios y tabla por día,
+    - exportación a CSV de episodios o resumen diario.
+  - **Borrar datos** (Historial → *Borrar…*, o Ajustes → Sistema), con confirmación: solo el historial, o el historial y los registros de texto. Después no se vuelve a importar.
+  - **Importación inicial:** al crearse, el historial se reconstruye a partir de los registros de texto existentes. Los episodios importados se marcan "del registro" porque son aproximados.
 - [ ] Controles: test de batería (`T`), cancelar apagado (`C`) y apagar la UPS con `S<n>`, con confirmación
 
 ### Fase 3 — Extras

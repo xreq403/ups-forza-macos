@@ -21,6 +21,12 @@ struct UPSForzaApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("Historial", id: "history") {
+            HistoryView()
+                .environment(monitor)
+        }
+        .defaultSize(width: 860, height: 760)
+
         Settings {
             SettingsView()
                 .environment(monitor)

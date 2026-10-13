@@ -45,6 +45,12 @@ struct SettingsView: View {
                 LabeledContent("Notificaciones") {
                     Button("Enviar prueba") { monitor.sendTestNotification() }
                 }
+                LabeledContent {
+                    ClearHistoryButton()
+                } label: {
+                    Text("Datos guardados")
+                    Text("Historial de cortes y AVR, y registros de texto.")
+                }
                 LabeledContent("Registro") {
                     Button("Mostrar en Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([monitor.logURL])

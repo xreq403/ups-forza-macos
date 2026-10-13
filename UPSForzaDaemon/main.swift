@@ -17,7 +17,21 @@ let suffix = isDebug ? "-debug" : ""
 
 let supportDir = URL(fileURLWithPath: "/Library/Application Support/UPSForza")
 let settingsURL = supportDir.appending(path: "settings\(suffix).json")
-let log = EventLog(url: URL(fileURLWithPath: "/Library/Logs/UPSForza/ups-forza\(suffix).log"))
+let logURL = URL(fileURLWithPath: "/Library/Logs/UPSForza/ups-forza\(suffix).log")
+let log = EventLog(url: logURL)
+let historyURL = supportDir.appending(path: "history\(suffix).jsonl")
+
+/// Registros de texto para reconstruir el historial la primera vez: el del daemon
+/// y los de la app en modo local de cada usuario (`~/Library/Logs/ups-forza.log`).
+nonisolated func logsToImport() -> [URL] {
+    var urls = [logURL.deletingPathExtension().appendingPathExtension("1.log"), logURL]
+    let users = (try? FileManager.default.contentsOfDirectory(atPath: "/Users")) ?? []
+    for user in users where !user.hasPrefix(".") && user != "Shared" {
+        let base = URL(fileURLWithPath: "/Users/\(user)/Library/Logs")
+        urls += [base.appending(path: "ups-forza.1.log"), base.appending(path: "ups-forza.log")]
+    }
+    return urls
+}
 
 // MARK: - Ajustes persistidos (para funcionar sin sesión abierta)
 
@@ -74,7 +88,9 @@ let core = MonitorCore(
     settings: loadSettings(),
     log: log,
     forced: .available(grace: 90, hasActiveClient: { clients.isActive }, execute: forceShutdown),
-    enforceBeeper: savedSettings
+    enforceBeeper: savedSettings,
+    historyURL: historyURL,
+    importLogs: logsToImport()
 )
 
 // MARK: - XPC
@@ -114,6 +130,21 @@ final class DaemonService: NSObject, UPSDaemonProtocol {
         Task {
             await core.shutdownNow()
             reply()
+        }
+    }
+
+    func clearHistory(includeLogs: Bool, reply: @escaping @Sendable () -> Void) {
+        clients.touch()
+        Task {
+            await core.clearHistory(includeLogs: includeLogs)
+            reply()
+        }
+    }
+
+    func history(days: Int, reply: @escaping @Sendable (Data?) -> Void) {
+        Task {
+            let snap = await core.history(days: days)
+            reply(try? DaemonIdentity.jsonEncoder.encode(snap))
         }
     }
 }

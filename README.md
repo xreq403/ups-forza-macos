@@ -29,7 +29,9 @@ Esta app habla directamente con la UPS. Muestra su estado en la barra de menús,
 - **Desconexión segura:** si se pierde la comunicación, por ejemplo al desconectar el dock, avisa pero **no apaga la Mac**.
 - **Alarma sonora:** se activa o silencia desde el panel o desde Ajustes, y se vuelve a aplicar cada vez que la app inicia o la UPS se reconecta.
 - **Arranque automático** al iniciar sesión.
-- **Registro** de eventos y lecturas en `~/Library/Logs/ups-forza.log`.
+- **Historial de la red:** cortes de luz y activaciones del AVR, voltaje de la red por día, gráficos y exportación a CSV.
+- **Servicio en segundo plano (daemon root):** vigila la UPS aunque no haya sesión abierta y fuerza el apagado si una app lo bloquea.
+- **Registro** de eventos y lecturas en `/Library/Logs/UPSForza/ups-forza.log` (con el servicio) o `~/Library/Logs/ups-forza.log` (sin él).
 - **`upsctl`:** herramienta de línea de comandos para consultar la UPS y enviarle comandos.
 
 ## Requisitos
@@ -143,17 +145,17 @@ cd UPSKit && swift test          # tests sin Xcode
 |---|---|
 | "UPS no detectada" | Revisá el cable USB y el dock. Con `swift run upsctl` podés confirmar si la Mac ve la UPS |
 | Ícono gris en las notificaciones | macOS guardó el ícono de una copia vieja. Ejecutá `killall usernoted NotificationCenter` |
-| La Mac no se apagó | Revisá el registro: una app con cambios sin guardar puede bloquear el apagado; la app vuelve a avisar a los 2 min |
+| La Mac no se apagó | Revisá el registro. Con el servicio activo, el apagado se fuerza a los 90 s; sin él, una app con cambios sin guardar puede bloquearlo y la app vuelve a avisar a los 2 min |
 | Lecturas raras | Verificá que no haya dos instancias corriendo (la instalada y la de Xcode) |
 
 ## Hoja de ruta
 
-- **Fase 1 — Monitoreo y protección:** casi completa. Falta probar el apagado real.
+- **Fase 1 — Monitoreo y protección:** completa y probada, incluido el apagado real.
 - **Fase 2 — App completa:**
-  - dashboard con gráficos,
-  - historial de cortes,
-  - controles de test de batería y apagado de la UPS,
-  - daemon root para un apagado forzado.
+  - ✅ daemon root con apagado forzado,
+  - ✅ historial de cortes y AVR,
+  - dashboard con gráficos en vivo,
+  - controles de test de batería y apagado de la UPS.
 - **Fase 3 — Extras:**
   - estimación de autonomía,
   - asistente de calibración de la batería,

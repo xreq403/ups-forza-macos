@@ -8,6 +8,10 @@ import Foundation
     func updateSettings(_ settings: Data, reply: @escaping @Sendable (Bool) -> Void)
     func postpone(minutes: Int, reply: @escaping @Sendable () -> Void)
     func shutdownNow(reply: @escaping @Sendable () -> Void)
+    /// Historial de los últimos `days` días (`HistorySnapshot` en JSON).
+    func history(days: Int, reply: @escaping @Sendable (Data?) -> Void)
+    /// Borra el historial y, si `includeLogs`, el registro del daemon.
+    func clearHistory(includeLogs: Bool, reply: @escaping @Sendable () -> Void)
 }
 
 /// Identidades y requisitos de firma compartidos por la app y el daemon.

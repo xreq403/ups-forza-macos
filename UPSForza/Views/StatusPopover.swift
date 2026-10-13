@@ -4,6 +4,7 @@ import UPSKit
 struct StatusPopover: View {
     @Environment(UPSMonitor.self) private var monitor
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -18,22 +19,42 @@ struct StatusPopover: View {
                     .opacity(monitor.link == .connected ? 1 : 0.5)
                 MetricsGrid(status: s)
                     .opacity(monitor.link == .connected ? 1 : 0.5)
-                BeeperToggleTile()
-                FlagsRow(status: s)
             } else {
                 searchingPlaceholder
             }
 
+            // Módulos al estilo del Centro de Control, en la misma grilla de 2 columnas.
+            HStack(spacing: 8) {
+                BeeperToggleTile()
+                HistoryTile {
+                    NSApp.activate()
+                    openWindow(id: "history")
+                }
+            }
+
+            if let s = monitor.status {
+                FlagsRow(status: s)
+            }
+
             Divider()
+                .padding(.horizontal, -4)
             HStack {
-                Button("Ajustes...") {
+                Button {
                     NSApp.activate()
                     openSettings()
+                } label: {
+                    Label("Ajustes", systemImage: "gearshape")
                 }
                 Spacer()
-                Button("Salir") { NSApp.terminate(nil) }
+                Button {
+                    NSApp.terminate(nil)
+                } label: {
+                    Label("Salir", systemImage: "power")
+                }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(FooterButtonStyle())
+            .padding(.horizontal, -6)
+            .padding(.bottom, -4)
         }
         .padding(16)
         .frame(width: 330)
@@ -218,33 +239,15 @@ struct BeeperToggleTile: View {
         Button {
             monitor.beeperEnabled.toggle()
         } label: {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
-                    Image(systemName: on ? "bell.fill" : "bell.slash.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(on ? Color.white : Color.primary)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .frame(width: 32, height: 32)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Alarma")
-                        .font(.callout.weight(.semibold))
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(monitor.beeperSyncError == nil ? Color.secondary : Color.dangerRed)
-                }
-                Spacer(minLength: 0)
-                if isApplying {
-                    ProgressView().controlSize(.small)
-                }
+            ModuleTile(
+                symbol: on ? "bell.fill" : "bell.slash.fill",
+                active: on,
+                title: "Alarma",
+                subtitle: subtitle,
+                subtitleColor: monitor.beeperSyncError == nil ? .secondary : .dangerRed
+            ) {
+                if isApplying { ProgressView().controlSize(.small) }
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .animation(.snappy, value: on)
@@ -263,6 +266,93 @@ struct BeeperToggleTile: View {
         if monitor.beeperSyncError != nil { return "No se pudo aplicar" }
         if isApplying { return "Aplicando…" }
         return monitor.beeperEnabled ? "Activada" : "Silenciada"
+    }
+}
+
+/// Abre la ventana del historial.
+struct HistoryTile: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ModuleTile(symbol: "clock.arrow.circlepath", active: false, title: "Historial", subtitle: "Cortes y AVR") {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Ver el historial de cortes de luz y del AVR")
+    }
+}
+
+/// Módulo al estilo del Centro de Control: círculo con ícono (relleno con el color
+/// de acento si está activo), título y subtítulo, y un accesorio opcional a la derecha.
+struct ModuleTile<Accessory: View>: View {
+    let symbol: String
+    let active: Bool
+    let title: String
+    let subtitle: String
+    var subtitleColor: Color = .secondary
+    @ViewBuilder var accessory: Accessory
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(active ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+                Image(systemName: symbol)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(active ? Color.white : Color.primary)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(subtitleColor)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            accessory
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(hovering ? 0.8 : 0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// Botón del pie del panel: ícono + texto discretos, con fondo al pasar el mouse.
+struct FooterButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        FooterButtonBody(configuration: configuration)
+    }
+
+    private struct FooterButtonBody: View {
+        let configuration: Configuration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.callout)
+                .foregroundStyle(hovering ? Color.primary : Color.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    Color.primary.opacity(configuration.isPressed ? 0.14 : hovering ? 0.08 : 0),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .onHover { hovering = $0 }
+        }
     }
 }
 

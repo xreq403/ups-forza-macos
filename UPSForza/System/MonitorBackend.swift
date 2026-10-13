@@ -10,6 +10,8 @@ protocol MonitorBackend: AnyObject, Sendable {
     func update(settings: MonitorSettings) async throws
     func postpone(minutes: Int) async throws
     func shutdownNow() async throws
+    func history(days: Int) async throws -> HistorySnapshot
+    func clearHistory(includeLogs: Bool) async throws
 }
 
 // MARK: - Local (sin daemon)
@@ -24,7 +26,13 @@ final class LocalBackend: MonitorBackend {
             device: ForzaUPS(),
             settings: settings,
             log: EventLog(url: EventLog.userLogURL),
-            forced: .unavailable(retryAfter: 120)
+            forced: .unavailable(retryAfter: 120),
+            historyURL: FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: "Library/Application Support/UPSForza/history.jsonl"),
+            importLogs: [
+                EventLog.userLogURL.deletingPathExtension().appendingPathExtension("1.log"),
+                EventLog.userLogURL,
+            ]
         )
     }
 
@@ -34,6 +42,8 @@ final class LocalBackend: MonitorBackend {
     func update(settings: MonitorSettings) async throws { await core.update(settings: settings) }
     func postpone(minutes: Int) async throws { await core.postpone(minutes: minutes) }
     func shutdownNow() async throws { await core.shutdownNow() }
+    func history(days: Int) async throws -> HistorySnapshot { await core.history(days: days) }
+    func clearHistory(includeLogs: Bool) async throws { await core.clearHistory(includeLogs: includeLogs) }
 }
 
 // MARK: - Daemon root por XPC
@@ -99,6 +109,19 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
 
     func shutdownNow() async throws {
         try await call { proxy, done in proxy.shutdownNow { done(.success(())) } }
+    }
+
+    func clearHistory(includeLogs: Bool) async throws {
+        try await call { proxy, done in proxy.clearHistory(includeLogs: includeLogs) { done(.success(())) } }
+    }
+
+    func history(days: Int) async throws -> HistorySnapshot {
+        let data: Data = try await call { proxy, done in
+            proxy.history(days: days) { data in
+                done(data.map { .success($0) } ?? .failure(DaemonBackendError.badReply))
+            }
+        }
+        return try DaemonIdentity.jsonDecoder.decode(HistorySnapshot.self, from: data)
     }
 
     /// Llama al daemon y espera la respuesta, con un límite de 5 s por si no responde.
