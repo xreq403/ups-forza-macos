@@ -1,7 +1,7 @@
 # UPS Forza — Plan de tecnología y alcance
 
 > Complementa a [spec.md](spec.md) (hallazgos del protocolo y requisitos).
-> Creado: 2026-10-12 · Última actualización: 2026-10-12
+> Creado: 2026-10-12 · Última actualización: 2026-10-13
 
 ---
 
@@ -25,7 +25,7 @@ El código Python (`discovery/forza_ups.py`) queda como **referencia** del proto
 - **macOS mínimo:** 14 (Sonoma). Hace falta para `@Observable` y `openSettings`. Probado en macOS 27.
 - **USB HID:** IOKit nativo (`IOHIDManager`), sin hidapi.
   - No necesita drivers ni permisos, porque la página de uso es `0xFF00`, definida por el fabricante.
-  - Los callbacks de conexión y desconexión resuelven el caso del dock desconectado.
+  - Los callbacks de conexión y desconexión resuelven el caso del cable USB desconectado.
 - **Sin App Sandbox** y fuera del App Store. Firma manual con el certificado **Apple Development** del equipo `L77R5X2WV6` (Eduardo Torres). La firma con equipo es obligatoria para el daemon: la app y el daemon validan entre sí su firma.
 - **Apagado de la Mac:**
   - Fase 1: AppleEvent `kAEShutDown` a `loginwindow`, que es un apagado ordenado. Si falla, usa `osascript` a System Events.
@@ -64,7 +64,9 @@ UPSForza.app
 ├── Contents/MacOS/UPSForzaDaemon      daemon root: lee la UPS, aplica la política, fuerza el apagado
 └── Contents/Library/LaunchDaemons/    com.xreq403.UPSForza[.debug].daemon.plist (SMAppService)
 
-App ──XPC (JSON)──▶ Daemon:  snapshot (estado + eventos), ajustes, posponer, apagar ahora
+App ──XPC (JSON)──▶ Daemon:  snapshot (estado, eventos, calibración, autonomía, recarga), ajustes,
+                            posponer, apagar ahora, historial, serie del panel, test de batería,
+                            calibración, pmset autorestart
 ```
 
 - **Núcleo compartido (`MonitorCore`):** el sondeo, la política, la alarma, el registro y la ejecución del apagado viven en `UPSKit`, sin UI. Lo usan el daemon y, como respaldo, la app.
@@ -96,7 +98,8 @@ UPSForza/                   app de barra de menús, SwiftUI (carpeta sincronizad
 ├── UPSMonitor.swift           polling, eventos, alarma sonora, acciones
 ├── AppSettings.swift          claves y valores por defecto
 ├── Assets.xcassets            AppIcon
-├── Views/                     popover, ajustes, aviso de apagado, historial (Swift Charts)
+├── Views/                     popover, ajustes, aviso de apagado, panel en vivo e historial (Swift Charts),
+│                              test de batería, calibración, recuperación
 └── System/                    notificaciones, apagado, backends (local / XPC), registro del daemon
 UPSForzaDaemon/main.swift   daemon root: XPC, ajustes persistidos, apagado forzado, autoactualización
 UPSKit/                     paquete local Swift (sin UI, testeable)
@@ -106,15 +109,20 @@ UPSKit/                     paquete local Swift (sin UI, testeable)
 │   ├── QSParser.swift         port de _tokenize / parse_qs
 │   ├── BatteryEstimator.swift curva de plomo-ácido 24 V
 │   ├── HIDTransport.swift     IOHIDManager, reports de 8 bytes
-│   ├── ForzaUPS.swift         comandos M, QS, Q, T, C, S<n> + setBeeper
+│   ├── ForzaUPS.swift         comandos M, QS, Q, T, C + setBeeper (S<n> existe, la UPS lo rechaza)
 │   ├── ShutdownEngine.swift   máquina de estados de la política de apagado
 │   ├── MonitorCore.swift      núcleo de monitoreo compartido (daemon y app)
 │   ├── DaemonProtocol.swift   interfaz XPC e identidades de firma
 │   ├── History.swift          historial (JSONL) y resumen por día
+│   ├── Series.swift           serie temporal del panel (1 h de lecturas, 24 h por minuto)
+│   ├── Calibration.swift      calibración de autonomía y estimación durante un corte
+│   ├── Recharge.swift         recarga tras un corte y ritmo medido del cargador
+│   ├── PowerManagement.swift  pmset autorestart
 │   ├── LogImporter.swift      reconstruye el historial desde los registros de texto
 │   └── EventLog.swift         registro en archivo
 ├── Sources/upsctl/         CLI equivalente a forza_ups.py, para probar el hardware
-└── Tests/UPSKitTests/      parser, curva, consumo, política, núcleo con UPS simulada e historial (46 tests)
+└── Tests/UPSKitTests/      parser, curva, política, núcleo con UPS simulada, historial, serie, test de batería,
+                            calibración, autonomía y recarga (79 tests)
 Support/UPSForza.entitlements  automation.apple-events (runtime endurecido)
 Support/forza-logo.svg      logo fuente del ícono
 Support/LaunchDaemons/      plists de launchd del daemon (Release y Debug)
@@ -131,10 +139,11 @@ discovery/                  scripts Python de diagnóstico (referencia)
   - Triángulo de alerta ante batería baja, falla, aviso de apagado o sin comunicación.
 - **Popover:**
   - Estado (Red eléctrica / En batería / Apagando / Sin conexión).
-  - Gauge de batería con voltaje y tiempo sin luz.
+  - Gauge de batería con voltaje y tiempo sin luz; durante un corte, la autonomía estimada; tras un corte, el % de la recarga y el tiempo hasta completarla.
   - Entrada, salida, **consumo** (% y W estimados sobre 1200 W) y frecuencia.
   - Control de **alarma** al estilo del Centro de Control.
   - Chips de falla, AVR, batería baja o test en curso, solo cuando aplican.
+  - Módulo *Panel* que abre la ventana **UPS Forza** (pestañas *Panel* e *Historial*).
 - **Aviso de apagado:** panel flotante en todos los Spaces con cuenta regresiva, *Apagar ahora* y *Posponer 5 min*.
 - **Ajustes:**
   - Umbrales de apagado y aviso previo.
@@ -142,7 +151,9 @@ discovery/                  scripts Python de diagnóstico (referencia)
   - Abrir al iniciar sesión.
   - Servicio en segundo plano: estado, activar o desactivar y aprobación.
   - Notificación de prueba y mostrar el registro.
+  - Recuperación tras un corte: encender la Mac al volver la luz (`pmset autorestart`).
   - Alarma sonora, sincronizada con el control del popover.
+  - Test de batería (hoja), test automático y calibración de autonomía (asistente en hoja).
   - Datos de la UPS: protocolo y valores nominales.
 
 ### Política de apagado (`ShutdownEngine`)
@@ -163,7 +174,8 @@ Estados: `unknown → online ⇄ onBattery → warning → shuttingDown`.
   - en modo local: `~/Library/Application Support/UPSForza/history.jsonl`.
 - **Por qué no SwiftData:** el dueño es el daemon root, y la app no puede abrir de forma segura una base SQLite que otro proceso escribe. La app pide el historial por XPC (`history(days:)`).
 - **Cuándo escribe:** al empezar y terminar cada episodio, al ordenar el apagado (antes del `shutdown`, para que el corte quede cerrado aunque la Mac se apague) y cada 10 min durante episodios en curso.
-- **Mantenimiento:** al cargar se compacta (la última versión de cada episodio gana) y se descarta lo de más de 365 días.
+- **Qué guarda:** cortes (los desenchufes de calibración van marcados y no cuentan), microcortes, AVR, voltaje diario, tests de batería, calibraciones y recargas.
+- **Mantenimiento:** al cargar se compacta (la última versión de cada episodio gana) y se descarta lo de más de 365 días, salvo tests, calibraciones y recargas, que se conservan siempre.
 - **Episodios sin cerrar** (el monitor se detuvo a mitad de un corte): se muestran "sin cierre".
 - **Importación:** `LogImporter` reconstruye cortes (de "CORTE"/"VOLVIÓ"/"APAGANDO"), AVR (del bit b5 de las lecturas) y voltaje diario a partir de `ups-forza.log`. El daemon importa su registro y los de la app de cada usuario.
 
@@ -226,7 +238,7 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
   - **Cortes de luz:** inicio, fin, voltaje y % mínimos de batería, consumo máximo y, si terminó con la Mac apagada, el motivo.
   - **Activaciones del AVR:** inicio, fin, tipo (*reducción* si la salida es menor que la entrada, *elevación* si es mayor) y voltajes de entrada y salida.
   - **Voltaje de la red por día:** mínimo, promedio y máximo de la entrada (solo con luz).
-  - **Ventana Historial** (popover → *Historial...*):
+  - **Pestaña Historial** de la ventana UPS Forza (popover → *Panel*):
     - resumen del período (7 / 30 / 90 días),
     - gráficos de tiempo sin luz y de activaciones del AVR por día,
     - lista de episodios y tabla por día,
@@ -253,16 +265,25 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
 - [x] Microcortes (2026-10-13): lecturas en batería que no llegaron a confirmarse como corte (vuelve la luz antes de la 2.ª lectura). Se registran en el historial (lista, tabla por día, CSV y "+ N microcortes" en el resumen), sin notificar ni afectar el apagado
 
 ### Fase 3 — Extras
-- [x] Estimación de autonomía (2026-10-13): con la última calibración válida, durante un corte se extrapola la pendiente escalada por el consumo promedio del corte (`Autonomy.estimate`, en el snapshot como `autonomy`). Durante la caída inicial se toma como mucho el voltaje de batería llena. Límite: el voltaje del % mínimo de la política (inversa de la curva) o 23,6 V. Si hay umbral de % o de tiempo, se muestra "Apagado en ~N min" (el menor); si no, "Quedan ~N min (hasta 23,6 V)". Aparece en el popover y en la notificación del corte.
-  - Primera calibración real: 30 min, ~62 W, 26,12 → 24,59 V, 0,026 V/min, ~68 min hasta 23,6 V.
-- [x] Recarga medida (2026-10-13): tras un corte el popover muestra el % estimado y "completa en ~N". Se da por llena con la flotación estable (≥ 27,0 V, 10 min, sin subir), no al pasar 26,8 V. Cada recarga se guarda en el historial y el ritmo del cargador sale del promedio de las últimas 3 (si no, 12 %/h típico). Ver spec §3.6.
-- [x] Asistente de calibración de autonomía (2026-10-13). La UPS rechaza `T01` (`N`), así que la descarga se hace desenchufando la UPS:
+- [x] Validación de un test de descarga por comando (2026-10-13, `upsctl discharge-probe`): la UPS responde `N` a `T01`, así que la calibración se hace desenchufando la UPS (ver spec.md §3.4)
+- [x] Asistente de calibración de autonomía (2026-10-13):
   - **Flujo:** Ajustes → UPS → *Calibrar…* → desenchufar (5 min para hacerlo) → registro de cada lectura → se detiene en 23,6 V, con batería baja de la UPS o al cumplir la duración máxima (15/30/60/90 min) → aviso para volver a enchufar → se guarda al volver la luz. Se puede detener antes; lo medido se guarda igual.
   - **Lo lleva `MonitorCore`** (daemon o local), así que sigue aunque se cierre la hoja. Estado en el snapshot (`CalibrationState`), eventos `calibrationStopped`, `calibrationFinished` y `calibrationAbandoned`, y XPC `startCalibration` y `cancelCalibration`.
-  - **Seguridad:** durante la descarga se suspenden los umbrales de % y de tiempo, y sigue el de batería baja de la UPS. Al terminar vuelven todos: si no se enchufa la UPS, la Mac se apaga como en un corte. Solo arranca con la batería llena (no recargando).
+  - **Seguridad:** durante la descarga se suspenden los umbrales de % y de tiempo, y sigue el de batería baja de la UPS. Al terminar vuelven todos: si no se enchufa la UPS, la Mac se apaga como en un corte. Solo arranca con la batería llena (recarga terminada).
   - **Resultado (`CalibrationRecord`, en el historial, se conserva siempre):** lecturas, pendiente (recta por mínimos cuadrados desde los 2 min, mínimo 5 min de datos), consumo promedio y minutos estimados hasta 23,6 V. El desenchufe queda marcado en el historial y no cuenta como corte ni notifica.
   - **Límite:** sin agotar la batería no se mide la capacidad total; la curva de % sigue siendo la del spec.
-  - [x] Primera calibración real (2026-10-13)
+  - [x] Primera calibración real (2026-10-13): 30 min, ~62 W, 26,12 → 24,59 V, **0,026 V/min**, ~68 min hasta 23,6 V (spec.md §3.7)
+- [x] Estimación de autonomía durante un corte (2026-10-13):
+  - Con la última calibración válida se extrapola la pendiente, escalada por el consumo promedio del corte (`Autonomy.estimate`, en el snapshot como `autonomy`).
+  - Durante la caída inicial se toma como mucho el voltaje de batería llena de la calibración.
+  - Límite: el voltaje del % mínimo de la política (inversa de la curva) o 23,6 V. Si hay umbral de % o de tiempo, se muestra "Apagado en ~N min" (el menor); si no, "Quedan ~N min (hasta 23,6 V)".
+  - Aparece en el popover y en la notificación del corte. Es optimista cerca del final de la batería (la caída deja de ser lineal).
+- [x] Recarga medida (2026-10-13):
+  - Con luz el % ya no queda fijo en 100: parte del % al terminar el corte y suma el ritmo del cargador, con tope de 99 %. El popover muestra "Recargando · completa en ~N" y, al pasar el mouse, el ritmo y si es medido.
+  - **Llena** = flotación estable (≥ 27,0 V durante 10 min, sin subir más de 0,03 V), no al pasar 26,8 V.
+  - Cada recarga completa se guarda (`RechargeRecord`) y el ritmo es el promedio de las últimas 3 usables (descarga ≥ 10 %, recarga ≥ 20 min); mientras no hay, 12 %/h típico.
+  - Se retoma tras reiniciar el monitor (último corte del historial, < 24 h, sin recarga registrada). Los microcortes no inician una recarga.
+  - [ ] Primera recarga medida (la de la calibración del 2026-10-13, desde 74 %)
 - ~~Widget~~: descartado, el panel en vivo alcanza
 
 **Fuera de alcance:** SNMP o red, varias UPS, servidor NUT y App Store.
@@ -275,7 +296,8 @@ scripts/build-app.sh                # arma build/UPSForza.app (Release)
 scripts/build-app.sh --install      # la copia a /Applications y la abre
 swift scripts/make-app-icon.swift Support/forza-logo.svg UPSForza/Assets.xcassets/AppIcon.appiconset [blue|light]
 cd UPSKit && swift test             # tests sin Xcode
-cd UPSKit && swift run upsctl       # estado de la UPS (también --json, --loop N, raw CMD, beeper on|off)
+cd UPSKit && swift run upsctl       # estado de la UPS (también --json, --loop N, raw CMD, beeper on|off,
+                                    #   battery-test, discharge-probe)
 ```
 
 Antes de usar `upsctl`, conviene cerrar la app y desactivar el servicio, para que no compitan por el USB.
@@ -308,10 +330,13 @@ tail -f /Library/Logs/UPSForza/ups-forza.log               # registro del daemon
 | Modo simulación | Quitado tras las pruebas | Tomada |
 | macOS mínimo | 14 | Tomada |
 | Variante del ícono | Azul con la F blanca | Tomada |
-| Apagar la UPS con `S<n>` | No (Fase 2, tras probar los comandos) | Pendiente |
+| Apagar la UPS con `S<n>` | No: la UPS lo rechaza (`N`); recuperación con `pmset autorestart` | Tomada |
 | Modelo de Mac | Mac mini M4 Pro (escritorio) → daemon root primero | Tomada |
 | Arquitectura del daemon | Dueño del monitoreo; la app es la UI | Tomada |
 | Firma | Apple Development, equipo `L77R5X2WV6` | Tomada |
 | Margen antes de forzar el apagado | 90 s | Tomada |
 | Calibración | Pendiente de descarga medida desenchufando la UPS; la curva de % queda la del spec | Tomada |
+| Test de descarga por comando (`T<n>`) | No soportado (`N`): calibración desenchufando la UPS | Tomada |
+| Batería llena tras un corte | Flotación estable ≥ 27,0 V 10 min (no 26,8 V) | Tomada |
+| Ritmo de recarga | Medido (promedio de las últimas 3); 12 %/h hasta tener datos | Tomada |
 | Widget | No, el panel en vivo alcanza | Tomada |

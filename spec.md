@@ -1,7 +1,7 @@
 # UPS Forza NT-2402PRO — Monitor y apagado automático para macOS
 
 > Especificación de hallazgos y objetivo del proyecto. Las decisiones de tecnología, la arquitectura y el avance están en [PLAN.md](PLAN.md).
-> Última actualización: 2026-10-12
+> Última actualización: 2026-10-13
 
 ---
 
@@ -9,11 +9,11 @@
 
 Construir un programa propio para macOS que:
 
-1. Se comunique con la UPS **Forza NT-2402PRO** por USB, conectada a través del dock.
+1. Se comunique con la UPS **Forza NT-2402PRO** por USB.
 2. Monitoree en tiempo real el estado de la UPS: red eléctrica, batería, carga y voltajes.
 3. **Apague la Mac de forma ordenada** antes de que la batería de la UPS se agote.
 4. Avise al usuario con notificaciones de macOS cuando se corte o vuelva la luz.
-5. Corra en segundo plano sin intervención manual. Se implementó como app de barra de menús con ítem de inicio de sesión.
+5. Corra en segundo plano sin intervención manual. Se implementó como app de barra de menús con ítem de inicio de sesión y un daemon root que funciona aunque no haya sesión abierta.
 
 **Fuera de alcance por ahora:** monitoreo por red (SNMP), múltiples equipos o integración con NUT como servidor.
 
@@ -29,7 +29,6 @@ Construir un programa propio para macOS que:
 | Pantalla | No tiene; solo LEDs y alarma sonora |
 | Comunicación | **USB**: cable incluido en la caja |
 | Puertos RJ-45/RJ-11 | **Solo protección contra picos** para la línea de datos. No transmiten información de la UPS |
-| Dock | CORSAIR TBT100 (Thunderbolt) |
 
 ### 2.1 Comportamiento del firmware (LEDs)
 
@@ -231,10 +230,37 @@ Curva actual, interpolada linealmente y válida para carga ligera (< 20 %):
 | 22,0 V | 5 |
 | ≤ 21,0 V | 0 |
 
-- Con luz se informa 100 %. Si el voltaje está por debajo de 26,8 V, se marca como "recargando".
-- **Durante la recarga tras un corte** (2026-10-13) el voltaje del cargador no sirve para el %: se parte del % al terminar el corte y se suma un ritmo en % por hora, con tope de 99 %. La recarga termina cuando el voltaje se mantiene **≥ 27,0 V durante 10 min sin subir más de 0,03 V** (flotación medida: 27,1–27,3 V); no al pasar 26,8 V, porque el voltaje se acerca a la flotación bastante antes de que la batería esté llena. Cada recarga completa se guarda (`RechargeRecord`) y el ritmo pasa a ser el promedio de las últimas 3 medidas (descarga ≥ 10 % y recarga ≥ 20 min); sin mediciones se usa ~12 %/h (≈ 90 % en 7–8 h, típico). Los microcortes (≥ 98 %) no inician una recarga. Tras reiniciar el monitor se retoma el último corte del historial si terminó hace menos de 24 h y su recarga no se registró.
-- **Es solo orientativa.** Hace falta una prueba de descarga más larga para calibrarla y estimar la autonomía real.
-- **Calibración de autonomía (implementada):** asistente en Ajustes → UPS. El usuario desenchufa la UPS; se registran voltaje y consumo en cada lectura hasta 23,6 V, batería baja de la UPS o la duración máxima (15–90 min), y se guarda al volver la luz. Se descarta la caída inicial (2 min, pérdida del voltaje del cargador) y se ajusta una recta: pendiente en V/min con el consumo medido y minutos estimados hasta 23,6 V. No mide la capacidad total, porque no se agota la batería, así que la curva de % no cambia.
+- **Es solo orientativa:** vale para carga ligera y no se calibró contra una descarga completa (ver §3.7).
+- **Con luz** el voltaje lo impone el cargador y no refleja la carga: se informa 100 %, salvo durante la recarga tras un corte (§3.8).
+- La inversa de la curva (% → voltaje) se usa para el límite de la estimación de autonomía cuando hay un % mínimo de apagado.
+
+### 3.7 Prueba de descarga (calibración de autonomía)
+
+Como la UPS no admite `T<n>` (§3.4), la descarga se hace **desenchufando la UPS de la pared** desde el asistente de la app (Ajustes → UPS → *Calibrar…*). Se registra cada lectura hasta 23,6 V, la batería baja de la UPS o la duración máxima elegida.
+
+**Primera calibración (2026-10-13, 30 min, ~62 W):**
+
+| Momento | Voltaje batería |
+|---|---|
+| Con luz (flotación) | 27,29 V |
+| Al desenchufar | 26,12 V |
+| A los 30 min | 24,59 V (≈ 74 % según la curva) |
+
+- 322 lecturas. Pendiente, sin los 2 primeros minutos de caída inicial: **0,026 V/min** con ~62 W (5 % de consumo).
+- Recta extrapolada a batería llena: ~25,37 V → **~68 min hasta 23,6 V** con ese consumo.
+- La energía usada (~31 Wh en la salida, ~1,5 Ah de la batería) es ~17 % de 9 Ah, menos que el 26 % que indica la curva: la curva parece algo pesimista con esta carga, pero no alcanza para corregirla.
+
+**Modelo de autonomía durante un corte:** minutos = (voltaje actual − límite) / (pendiente × consumo actual / consumo de la calibración). El voltaje actual se toma como mucho el de batería llena de la recta, porque al principio del corte todavía no refleja la descarga. Es optimista cerca del final: el plomo-ácido cae más rápido al agotarse.
+
+### 3.8 Recarga tras un corte
+
+- **Con luz, el voltaje no indica la carga:** sube hacia la flotación bastante antes de que la batería esté llena. Tras la calibración, a los 15 min de recarga ya marcaba 26,82 V (por encima del antiguo umbral de "llena" de 26,8 V).
+- **Llena** = el voltaje se mantiene **≥ 27,0 V durante 10 min sin subir más de 0,03 V** (flotación medida: 27,1–27,3 V).
+- **% durante la recarga:** se parte del % al terminar el corte y se suma el ritmo del cargador, con tope de 99 % hasta llegar a flotación.
+- **Ritmo:** cada recarga completa se guarda y el ritmo es el promedio de las últimas 3 usables (descarga ≥ 10 % y recarga ≥ 20 min). Sin mediciones se usa ~12 %/h (≈ 90 % en 7–8 h, típico de UPS de este tamaño con 2 × 9 Ah).
+- Cuenta aproximada para la calibración: ~1,5 Ah consumidos, ~1,8 Ah a reponer con las pérdidas de carga; con un cargador de ~1 A, 2–3 h.
+- Los microcortes (≥ 98 %) no inician una recarga.
+- **Pendiente:** la primera recarga medida (la de la calibración, desde 74 %).
 
 ---
 
@@ -245,8 +271,9 @@ La implementación es una app nativa en Swift. El detalle de la arquitectura est
 | Ubicación | Propósito |
 |---|---|
 | `UPSKit/` | Paquete Swift: transporte HID (IOKit), decodificación de `QS`, curva de batería, comandos y política de apagado, con tests |
-| `UPSKit/Sources/upsctl` | CLI equivalente a `forza_ups.py` (`--json`, `--loop N`, `raw CMD`, `beeper on\|off`) |
+| `UPSKit/Sources/upsctl` | CLI equivalente a `forza_ups.py` (`--json`, `--loop N`, `raw CMD`, `beeper on\|off`, `battery-test`, `discharge-probe`) |
 | `UPSForza/` + `UPSForza.xcodeproj` | App de barra de menús (SwiftUI) |
+| `UPSForzaDaemon/` | Daemon root: monitoreo sin sesión y apagado forzado |
 | `discovery/` | Scripts Python de diagnóstico, conservados como referencia |
 
 **Scripts Python (`discovery/`):**
@@ -265,7 +292,7 @@ cd discovery
 
 ---
 
-## 5. Requisitos del servicio de apagado (implementados en la Fase 1)
+## 5. Requisitos del servicio de apagado (implementados)
 
 ### 5.1 Lógica de decisión
 
@@ -282,45 +309,50 @@ Además:
 - **Antirrebote:** un corte se confirma solo tras 2 lecturas consecutivas, para no reaccionar a microcortes.
 - **Cancelación:** si vuelve la luz antes de alcanzar el umbral, se cancela el conteo y se notifica.
 - **Aviso previo:** se notifica y se muestra un panel con cuenta regresiva 60 s antes de apagar, configurable. Ofrece *Apagar ahora* y *Posponer 5 min*; si la UPS indica batería baja, no se puede posponer.
-- **Sin comunicación:** si se pierde el contacto con la UPS, por ejemplo al desconectar el dock, se notifica pero **no** se apaga.
+- **Sin comunicación:** si se pierde el contacto con la UPS, por ejemplo al desconectar el cable USB, se notifica pero **no** se apaga.
 
-### 5.2 Apagado de la UPS (opcional, a decidir)
+### 5.2 Apagado de la UPS y recuperación
 
-Después de ordenar el apagado de la Mac, se puede enviar `S<n>` a la UPS. Así la UPS corta su salida tras `n` minutos y la reenciende sola al volver la luz. Si se combina con *Ajustes → Energía → Arrancar automáticamente tras un corte de luz* (`sudo pmset autorestart 1`), la Mac se recupera sin intervención.
+La idea era enviar `S<n>` tras ordenar el apagado de la Mac, para que la UPS corte su salida y la reencienda al volver la luz. **La NT-2402PRO lo rechaza** (§3.4), así que se descartó.
+
+La recuperación queda así: la app activa `pmset autorestart 1` (Ajustes → Recuperación tras un corte, lo aplica el daemon root). Si el corte agota la batería, la UPS corta la salida y la restablece al volver la luz, y la Mac arranca sola. Si la luz vuelve antes, la Mac queda apagada y hay que encenderla a mano.
 
 ### 5.3 Integración con macOS
 
 | Tema | Propuesta original | Implementado |
 |---|---|---|
-| Ejecución | `LaunchAgent` o `LaunchDaemon` | App de barra de menús (`LSUIElement`) con ítem de inicio de sesión (`SMAppService.mainApp`). Daemon root en la Fase 2 |
-| Apagado | `osascript` a System Events o `shutdown -h now` como root | AppleEvent `kAEShutDown` a `loginwindow` (ordenado), con `osascript` de respaldo |
+| Ejecución | `LaunchAgent` o `LaunchDaemon` | App de barra de menús (`LSUIElement`) con ítem de inicio de sesión (`SMAppService.mainApp`) y daemon root (`SMAppService.daemon` + XPC) |
+| Apagado | `osascript` a System Events o `shutdown -h now` como root | AppleEvent `kAEShutDown` a `loginwindow` (ordenado), con `osascript` de respaldo. El daemon fuerza `shutdown -h now` a los 90 s, o de inmediato sin sesión |
 | Notificaciones | `osascript` o `terminal-notifier` | `UNUserNotificationCenter` nativo, con el ícono de la app |
-| Registro | `~/Library/Logs/ups-forza.log` | Igual: eventos y lecturas (cada 60 s con luz, en cada consulta durante un corte) |
-| Configuración | `config.toml` | Ajustes en la app (`UserDefaults`) |
+| Registro | `~/Library/Logs/ups-forza.log` | `/Library/Logs/UPSForza/ups-forza.log` con el daemon; `~/Library/Logs/ups-forza.log` sin él. Eventos y lecturas (cada 60 s con luz, en cada consulta durante un corte) |
+| Configuración | `config.toml` | Ajustes en la app (`UserDefaults`), copiados al daemon en `/Library/Application Support/UPSForza/settings.json` |
 
-- **Apagado ordenado:** alguna app con cambios sin guardar puede bloquearlo. Si 2 minutos después la Mac sigue encendida, se vuelve a avisar.
+- **Apagado ordenado:** alguna app con cambios sin guardar puede bloquearlo. Con el daemon se fuerza a los 90 s; sin él, si 2 minutos después la Mac sigue encendida, se vuelve a avisar.
 - **Alarma sonora:** configurable. Se aplica a la UPS al iniciar, al reconectar y al cambiar el ajuste.
 
-### 5.4 Ideas futuras
+### 5.4 Ideas que se implementaron
 
-- Estimar la autonomía restante a partir de la pendiente del voltaje.
-- Historial de cortes de luz y de activaciones del AVR, para medir la estabilidad de la red (planificado en la Fase 2 de [PLAN.md](PLAN.md)).
+- Autonomía restante a partir de la pendiente del voltaje (§3.7).
+- Historial de cortes, microcortes y activaciones del AVR, para medir la estabilidad de la red.
+- Ícono en la barra de menús con el estado y el %.
 
-El ícono en la barra de menús con el estado y el % ya está implementado.
+El detalle de cada fase está en [PLAN.md](PLAN.md).
 
 ---
 
 ## 6. Decisiones
 
 - [x] Umbrales de apagado. Por defecto: batería baja de la UPS · < 30 % · 10 min sin luz. Configurados actualmente: batería baja de la UPS · < 10 % · sin límite de minutos.
-- [x] LaunchAgent o LaunchDaemon: ítem de inicio de sesión ahora; daemon root en la Fase 2 para el apagado forzado.
+- [x] LaunchAgent o LaunchDaemon: ítem de inicio de sesión para la app y daemon root (`SMAppService.daemon`) para el monitoreo sin sesión y el apagado forzado.
 - [x] Notificaciones: `UNUserNotificationCenter` nativo.
 - [x] Alarma sonora: configurable desde la app (`Q` probado).
-- [ ] ¿Apagar también la UPS tras apagar la Mac (`S<n>`)? ¿Con qué retardo?
+- [x] ¿Apagar también la UPS tras apagar la Mac (`S<n>`)? No: la UPS no lo admite. Recuperación con `pmset autorestart` (§5.2).
 - [x] Probar el apagado real de la Mac desde la app (2026-10-13: funcionó).
-- [x] Asistente de calibración de autonomía (descarga desenchufando la UPS; `T<n>` no está soportado). Falta hacer la primera prueba real.
-- [ ] Probar en el equipo real los comandos de control `T`, `C` y `S`.
-- [ ] Modelo de Mac: si es portátil, tiene batería propia y eso cambia la urgencia del apagado.
+- [x] Calibración de autonomía: descarga desenchufando la UPS (`T<n>` no está soportado). Primera prueba real hecha (§3.7).
+- [x] Probar en el equipo real los comandos de control: `T` funciona; `S<n>` y `T01` responden `N`; `C` sin efecto visible (no había nada que cancelar).
+- [x] Modelo de Mac: Mac mini M4 Pro (escritorio, sin batería propia) → daemon root con apagado forzado.
+- [ ] Medir la primera recarga completa (§3.8).
+- [ ] Probar el apagado sin sesión abierta y el arranque automático tras agotarse la batería.
 
 ---
 
