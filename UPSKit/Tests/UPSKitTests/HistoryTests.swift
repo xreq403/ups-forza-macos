@@ -29,7 +29,7 @@ struct LogImporterTests {
             case .outage(let r): o.append(r)
             case .avr(let r): a.append(r)
             case .day(let s): d.append(s)
-            case .batteryTest: break
+            case .batteryTest, .microOutage: break
             }
         }
         return (o.sorted { $0.start < $1.start }, a, d.sorted { $0.day < $1.day })
@@ -189,5 +189,65 @@ struct HistoryClearTests {
         await again.start()
         await again.stop()
         #expect(await again.history(days: 3650).outages.isEmpty)
+    }
+}
+
+struct HistoryMergeTests {
+    @Test func mergeAddsWithoutDuplicates() {
+        let tmp = FileManager.default.temporaryDirectory
+        let local = HistoryStore(url: tmp.appending(path: "local-\(UUID().uuidString).jsonl"))
+        let t0 = Date(timeIntervalSinceNow: -600)
+        local.outageStarted(at: t0)
+        local.outageEnded(at: t0.addingTimeInterval(30))
+        local.record(batteryTest: BatteryTestRecord(start: t0, trigger: .manual, outcome: .passed,
+                                                    voltageBefore: 27.29, voltageMin: 26.0, health: .reference))
+        let data = try! Data(contentsOf: local.url)
+
+        let daemon = HistoryStore(url: tmp.appending(path: "daemon-\(UUID().uuidString).jsonl"))
+        daemon.merge(jsonl: data)
+        daemon.merge(jsonl: data)   // dos veces: sin duplicados
+        let snap = daemon.snapshot(since: t0.addingTimeInterval(-60))
+        #expect(snap.outages.count == 1)
+        #expect(snap.batteryTests.count == 1)
+        #expect(daemon.referenceBatteryTest?.voltageMin == 26.0)
+    }
+}
+
+struct MicroOutageTests {
+    let t0 = Date(timeIntervalSinceNow: -600)
+    func at(_ s: Double) -> Date { t0.addingTimeInterval(s) }
+    func store() -> HistoryStore {
+        HistoryStore(url: FileManager.default.temporaryDirectory.appending(path: "micro-\(UUID().uuidString).jsonl"))
+    }
+    let online = UPSStatus(inputVoltage: 235, outputVoltage: 235)
+    let battery = UPSStatus(inputVoltage: 8.5, outputVoltage: 224, onBattery: true)
+
+    @Test func singleBatteryReadingIsMicroOutage() {
+        let h = store()
+        h.ingest(online, at: at(0))
+        h.ingest(battery, at: at(5))
+        h.ingest(online, at: at(10))
+        let m = h.snapshot(since: at(-60)).microOutages
+        #expect(m.count == 1)
+        #expect(m.first?.start == at(5))
+        #expect(m.first?.end == at(10))
+        #expect(m.first?.readings == 1)
+    }
+
+    @Test func confirmedOutageIsNotMicro() {
+        let h = store()
+        h.ingest(battery, at: at(5))
+        h.outageStarted(at: at(5))          // el engine lo confirmó
+        h.ingest(battery, at: at(10))
+        h.outageEnded(at: at(20))
+        h.ingest(online, at: at(20))
+        let snap = h.snapshot(since: at(-60))
+        #expect(snap.microOutages.isEmpty)
+        #expect(snap.outages.count == 1)
+    }
+
+    @Test func countedInDailySummary() {
+        let snap = HistorySnapshot(microOutages: [MicroOutageRecord(start: .now.addingTimeInterval(-60), end: .now)])
+        #expect(HistorySummary.daily(snap, days: 1).first?.microOutages == 1)
     }
 }

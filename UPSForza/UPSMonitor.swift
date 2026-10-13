@@ -179,6 +179,23 @@ final class UPSMonitor {
         lastEventID = -1      // no repetir eventos viejos del nuevo backend
         lastPushed = nil      // enviarle los ajustes de esta app
         warningPanel.close()
+        if let daemonBackend = new as? DaemonBackend { await mergeLocalHistory(into: daemonBackend) }
+    }
+
+    /// Lo registrado en modo local (cortes, AVR, tests de batería, incluida la
+    /// referencia) pasa al historial del daemon. El archivo se renombra para no
+    /// volver a enviarlo.
+    private func mergeLocalHistory(into daemon: DaemonBackend) async {
+        let fm = FileManager.default
+        guard let data = try? Data(contentsOf: LocalHistory.url), !data.isEmpty else { return }
+        do {
+            _ = try await daemon.mergeHistory(data)
+            try? fm.removeItem(at: LocalHistory.mergedURL)
+            try fm.moveItem(at: LocalHistory.url, to: LocalHistory.mergedURL)
+            historyRevision += 1
+        } catch {
+            backendError = "No se pudo pasar el historial local al servicio: \(error)"
+        }
     }
 
     private func pushSettingsIfNeeded() async {

@@ -105,6 +105,24 @@ public struct DayStats: Codable, Sendable, Equatable {
     }
 }
 
+/// Microcorte: lecturas en batería que no llegaron a confirmarse como corte
+/// (la luz volvió antes de la segunda lectura). Mide la estabilidad de la red.
+public struct MicroOutageRecord: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let start: Date
+    /// Primera lectura con luz después del microcorte (fin aproximado).
+    public var end: Date
+    /// Lecturas en batería (normalmente 1).
+    public var readings: Int
+
+    public init(id: UUID = UUID(), start: Date, end: Date, readings: Int = 1) {
+        self.id = id
+        self.start = start
+        self.end = end
+        self.readings = readings
+    }
+}
+
 // MARK: - Test de batería
 
 public enum BatteryTestTrigger: String, Codable, Sendable {
@@ -190,6 +208,7 @@ public enum HistoryLine: Codable, Sendable, Equatable {
     case avr(AVRRecord)
     case day(DayStats)
     case batteryTest(BatteryTestRecord)
+    case microOutage(MicroOutageRecord)
 }
 
 public struct HistorySnapshot: Codable, Sendable {
@@ -197,17 +216,19 @@ public struct HistorySnapshot: Codable, Sendable {
     public var avr: [AVRRecord]
     public var days: [DayStats]
     public var batteryTests: [BatteryTestRecord]
+    public var microOutages: [MicroOutageRecord]
     /// Episodios en curso (los demás sin `end` quedaron sin cerrar).
     public var currentOutageID: UUID?
     public var currentAVRID: UUID?
 
     public init(outages: [OutageRecord] = [], avr: [AVRRecord] = [], days: [DayStats] = [],
-                batteryTests: [BatteryTestRecord] = [],
+                batteryTests: [BatteryTestRecord] = [], microOutages: [MicroOutageRecord] = [],
                 currentOutageID: UUID? = nil, currentAVRID: UUID? = nil) {
         self.outages = outages
         self.avr = avr
         self.days = days
         self.batteryTests = batteryTests
+        self.microOutages = microOutages
         self.currentOutageID = currentOutageID
         self.currentAVRID = currentAVRID
     }
@@ -230,6 +251,9 @@ final class HistoryStore {
     private var avr: [UUID: AVRRecord] = [:]
     private var days: [String: DayStats] = [:]
     private var batteryTests: [UUID: BatteryTestRecord] = [:]
+    private var microOutages: [UUID: MicroOutageRecord] = [:]
+    /// Lecturas en batería todavía no confirmadas como corte.
+    private var pendingMicro: (start: Date, readings: Int)?
     private var currentOutageID: UUID?
     private var currentAVRID: UUID?
     private var lastCheckpoint = Date.now
@@ -245,6 +269,7 @@ final class HistoryStore {
 
     func outageStarted(at start: Date) {
         guard currentOutageID == nil else { return }   // ya hay uno abierto
+        pendingMicro = nil                             // se confirmó: no es un microcorte
         let record = OutageRecord(start: start)
         currentOutageID = record.id
         outages[record.id] = record
@@ -280,6 +305,19 @@ final class HistoryStore {
     /// Cada lectura correcta de la UPS.
     func ingest(_ s: UPSStatus, at date: Date) {
         if let id = currentOutageID { outages[id]?.include(s) }
+
+        // Microcortes: lecturas en batería sin corte confirmado. Si vuelve la luz
+        // antes de la confirmación, quedan registradas como microcorte.
+        if currentOutageID == nil {
+            if s.onBattery {
+                pendingMicro = (pendingMicro?.start ?? date, (pendingMicro?.readings ?? 0) + 1)
+            } else if let pending = pendingMicro {
+                let m = MicroOutageRecord(start: pending.start, end: date, readings: pending.readings)
+                microOutages[m.id] = m
+                pendingMicro = nil
+                append(.microOutage(m))
+            }
+        }
 
         // AVR: solo con luz.
         let avrOn = s.avrActive && !s.onBattery
@@ -324,6 +362,8 @@ final class HistoryStore {
         avr = [:]
         days = [:]
         batteryTests = [:]
+        microOutages = [:]
+        pendingMicro = nil
         currentOutageID = nil
         currentAVRID = nil
         lastDayKey = nil
@@ -344,6 +384,28 @@ final class HistoryStore {
         batteryTests.values.max { $0.start < $1.start }
     }
 
+    /// Fusiona un archivo de historial (JSONL) de otro monitor, p. ej. el de la app
+    /// en modo local. Los episodios con el mismo id no se duplican.
+    /// Devuelve cuántas líneas válidas tenía.
+    @discardableResult
+    func merge(jsonl data: Data) -> Int {
+        let decoder = JSONDecoder()
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap {
+            try? decoder.decode(HistoryLine.self, from: Data($0.utf8))
+        }
+        for line in lines {
+            // Un día que ya existe: los dos monitores suelen partir de la misma copia,
+            // así que sumar contaría dos veces. Se queda la versión con más muestras.
+            if case .day(let incoming) = line, let existing = days[incoming.day] {
+                if incoming.samples > existing.samples { days[incoming.day] = incoming }
+            } else {
+                apply(line)
+            }
+        }
+        rewrite()
+        return lines.count
+    }
+
     func importLines(_ lines: [HistoryLine]) {
         for line in lines { apply(line) }
         rewrite()
@@ -356,6 +418,7 @@ final class HistoryStore {
             avr: avr.values.filter { ($0.end ?? .now) >= since }.sorted { $0.start > $1.start },
             days: days.values.filter { $0.day >= sinceKey }.sorted { $0.day > $1.day },
             batteryTests: batteryTests.values.filter { $0.start >= since }.sorted { $0.start > $1.start },
+            microOutages: microOutages.values.filter { $0.end >= since }.sorted { $0.start > $1.start },
             currentOutageID: currentOutageID,
             currentAVRID: currentAVRID
         )
@@ -369,6 +432,7 @@ final class HistoryStore {
         case .avr(let r): avr[r.id] = r
         case .day(let d): days[d.day] = d
         case .batteryTest(let t): batteryTests[t.id] = t
+        case .microOutage(let m): microOutages[m.id] = m
         }
     }
 
@@ -386,6 +450,7 @@ final class HistoryStore {
         let cutoff = Date.now.addingTimeInterval(-Double(Self.retentionDays) * 86_400)
         let cutoffKey = Self.dayKey(cutoff)
         outages = outages.filter { ($0.value.end ?? $0.value.start) >= cutoff }
+        microOutages = microOutages.filter { $0.value.end >= cutoff }
         // Los tests se conservan siempre: el de referencia puede tener años.
 
         avr = avr.filter { ($0.value.end ?? $0.value.start) >= cutoff }
@@ -396,6 +461,7 @@ final class HistoryStore {
         lines += avr.values.sorted { $0.start < $1.start }.map(HistoryLine.avr)
         lines += days.values.sorted { $0.day < $1.day }.map(HistoryLine.day)
         lines += batteryTests.values.sorted { $0.start < $1.start }.map(HistoryLine.batteryTest)
+        lines += microOutages.values.sorted { $0.start < $1.start }.map(HistoryLine.microOutage)
         let encoder = JSONEncoder()
         let data = lines.compactMap { try? encoder.encode($0) }
             .reduce(into: Data()) { $0 += $1; $0 += Data("\n".utf8) }
@@ -434,6 +500,7 @@ public struct DaySummary: Sendable, Equatable, Identifiable {
     public let date: Date
     public var outages = 0
     public var outageSeconds: TimeInterval = 0
+    public var microOutages = 0
     public var avrCount = 0
     public var avrSeconds: TimeInterval = 0
     public var inputMin: Double?
@@ -463,6 +530,7 @@ public enum HistorySummary {
                 if o.start >= start && o.start < end { s.outages += 1 }
                 if overlap > 0 { s.outageSeconds += overlap }
             }
+            s.microOutages = snap.microOutages.filter { $0.start >= start && $0.start < end }.count
             for a in snap.avr {
                 let aEnd = a.end ?? (a.id == snap.currentAVRID ? now : a.start)
                 let overlap = min(aEnd, end).timeIntervalSince(max(a.start, start))

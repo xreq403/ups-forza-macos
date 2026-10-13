@@ -17,6 +17,42 @@ protocol MonitorBackend: AnyObject, Sendable {
     func runBatteryTest() async throws -> BatteryTestResponse
 }
 
+/// Historial de la app en modo local (sin daemon).
+enum LocalHistory {
+    static var url: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/UPSForza/history.jsonl")
+    }
+    /// Copia ya enviada al daemon: no se vuelve a enviar.
+    static var mergedURL: URL { url.deletingPathExtension().appendingPathExtension("merged.jsonl") }
+
+    /// Historial del daemon de esta build (legible por los usuarios).
+    static var daemonURL: URL {
+        let debug = Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true
+        return URL(fileURLWithPath: "/Library/Application Support/UPSForza/history\(debug ? "-debug" : "").jsonl")
+    }
+
+    /// Prepara el historial local antes de arrancar el monitor local:
+    /// - si no hay historial local, parte de una copia del daemon (para ver lo mismo
+    ///   en los dos modos, aunque el servicio se haya desactivado desde Ajustes del Sistema);
+    /// - solo si no existe ningún historial se importan los registros de texto.
+    /// Devuelve los registros a importar (vacío si no corresponde).
+    static func prepare() -> [URL] {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: url.path) else { return [] }
+        if let data = try? Data(contentsOf: daemonURL), !data.isEmpty {
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url, options: .atomic)
+            return []
+        }
+        if fm.fileExists(atPath: mergedURL.path) || fm.fileExists(atPath: daemonURL.path) { return [] }
+        return [
+            EventLog.userLogURL.deletingPathExtension().appendingPathExtension("1.log"),
+            EventLog.userLogURL,
+        ]
+    }
+}
+
 // MARK: - Local (sin daemon)
 
 /// La app consulta la UPS por su cuenta. Sin privilegios: si una app bloquea el
@@ -30,12 +66,8 @@ final class LocalBackend: MonitorBackend {
             settings: settings,
             log: EventLog(url: EventLog.userLogURL),
             forced: .unavailable(retryAfter: 120),
-            historyURL: FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Library/Application Support/UPSForza/history.jsonl"),
-            importLogs: [
-                EventLog.userLogURL.deletingPathExtension().appendingPathExtension("1.log"),
-                EventLog.userLogURL,
-            ]
+            historyURL: LocalHistory.url,
+            importLogs: LocalHistory.prepare()
         )
     }
 
@@ -124,6 +156,10 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
 
     func clearHistory(includeLogs: Bool) async throws {
         try await call { proxy, done in proxy.clearHistory(includeLogs: includeLogs) { done(.success(())) } }
+    }
+
+    func mergeHistory(_ jsonl: Data) async throws -> Int {
+        try await call(timeout: 15) { proxy, done in proxy.mergeHistory(jsonl) { done(.success($0)) } }
     }
 
     func runBatteryTest() async throws -> BatteryTestResponse {

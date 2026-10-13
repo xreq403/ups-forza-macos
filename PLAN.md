@@ -233,7 +233,13 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
   - **Salud:** el primer test superado es la **referencia**. Un test posterior con consumo parecido (±5 puntos) y voltaje mínimo 0,4 V por debajo de la referencia se marca **desgaste**; batería baja o falla durante el test es **falla**.
   - **Historial:** cada test queda guardado (no se descarta por antigüedad, porque la referencia puede tener años). Aparece en la lista de episodios y en el CSV.
   - **Automático** (Ajustes → UPS → *Test de batería automático*: desactivado, cada semana o cada mes): solo con 10 min de luz estable. Notifica solo si hay falla, desgaste o la UPS no inició el test.
-- [ ] Primer test desde la app (queda como referencia de salud)
+- [x] Primer test desde la app (2026-10-13, en modo local): referencia **26,00 V** (caída 1,29 V, consumo 6 %); el segundo dio OK
+- [x] Fusión del historial local al activar el daemon: la app envía su `history.jsonl` (`mergeHistory` por XPC), se fusiona sin duplicar por id y se renombra a `history.merged.jsonl`
+- [x] Un solo historial visible en los dos modos:
+  - **Al pasar a modo local**, la app arranca con una copia del historial del daemon. El archivo es legible por los usuarios, así que funciona aunque el servicio se desactive desde Ajustes del Sistema.
+  - **Los registros de texto** solo se importan si no existe ningún historial (local, fusionado o del daemon); así se evitan duplicados con ids nuevos.
+  - **Estadística diaria al fusionar:** gana la versión con más muestras, no la suma.
+- [x] Microcortes (2026-10-13): lecturas en batería que no llegaron a confirmarse como corte (vuelve la luz antes de la 2.ª lectura). Se registran en el historial (lista, tabla por día, CSV y "+ N microcortes" en el resumen), sin notificar ni afectar el apagado
 
 ### Fase 3 — Extras
 - [ ] Estimación de autonomía por la pendiente del voltaje

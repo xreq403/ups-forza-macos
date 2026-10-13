@@ -133,6 +133,11 @@ final class DaemonService: NSObject, UPSDaemonProtocol {
         }
     }
 
+    func mergeHistory(_ jsonl: Data, reply: @escaping @Sendable (Int) -> Void) {
+        clients.touch()
+        Task { reply(await core.mergeHistory(jsonl)) }
+    }
+
     func clearHistory(includeLogs: Bool, reply: @escaping @Sendable () -> Void) {
         clients.touch()
         Task {

@@ -162,6 +162,7 @@ private struct SummaryTiles: View {
 
     var body: some View {
         let outages = days.reduce(0) { $0 + $1.outages }
+        let micro = days.reduce(0) { $0 + $1.microOutages }
         let outageTime = days.reduce(0) { $0 + $1.outageSeconds }
         let avr = days.reduce(0) { $0 + $1.avrCount }
         let avrTime = days.reduce(0) { $0 + $1.avrSeconds }
@@ -171,7 +172,8 @@ private struct SummaryTiles: View {
 
         Grid(horizontalSpacing: 12) {
             GridRow {
-                StatTile(title: "Cortes de luz", value: "\(outages)", symbol: "bolt.slash.fill", tint: .chartOutage)
+                StatTile(title: "Cortes de luz", value: "\(outages)", symbol: "bolt.slash.fill", tint: .chartOutage,
+                         footnote: micro > 0 ? "+ \(micro) microcorte\(micro == 1 ? "" : "s")" : nil)
                 StatTile(title: "Tiempo sin luz", value: outageTime > 0 ? outageTime.durationText : "0 s",
                          symbol: "clock", tint: .chartOutage)
                 StatTile(title: "Activaciones AVR", value: "\(avr)", symbol: "waveform.path.ecg", tint: .chartAVR)
@@ -188,6 +190,7 @@ private struct StatTile: View {
     let value: String
     let symbol: String
     let tint: Color
+    var footnote: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -198,11 +201,21 @@ private struct StatTile: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(.title3, design: .rounded).weight(.semibold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(value)
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                if let footnote {
+                    Text(footnote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .help("Microcortes: cortes de menos de ~10 s que no llegaron a confirmarse")
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -337,7 +350,7 @@ private struct BinnedBarChart: View {
 // MARK: - Episodios
 
 private struct Episode: Identifiable {
-    enum Kind { case outage, avr, batteryTest }
+    enum Kind { case outage, avr, batteryTest, microOutage }
     let id: UUID
     let kind: Kind
     let start: Date
@@ -407,14 +420,19 @@ private struct EpisodeList: View {
                            inProgress: false, detail: detail, imported: false, tint: tint,
                            badge: t.trigger == .scheduled ? "automático" : nil)
         }
-        return (outages + avr + tests).sorted { $0.start > $1.start }
+        let micro = snapshot.microOutages.map { m in
+            Episode(id: m.id, kind: .microOutage, start: m.start, end: m.end, inProgress: false,
+                    detail: m.readings == 1 ? "1 lectura en batería" : "\(m.readings) lecturas en batería",
+                    imported: false)
+        }
+        return (outages + avr + tests + micro).sorted { $0.start > $1.start }
     }
 
     var body: some View {
         let items = episodes
         if items.isEmpty {
             ContentUnavailableView("Sin episodios", systemImage: "checkmark.seal",
-                                   description: Text("No hubo cortes de luz ni activaciones del AVR en este período."))
+                                   description: Text("No hubo cortes de luz, microcortes, activaciones del AVR ni tests de batería en este período."))
                 .frame(maxWidth: .infinity)
         } else {
             VStack(spacing: 0) {
@@ -436,6 +454,7 @@ private struct EpisodeRow: View {
         case .outage: "bolt.slash.fill"
         case .avr: "waveform.path.ecg"
         case .batteryTest: "minus.plus.batteryblock"
+        case .microOutage: "bolt.slash"
         }
     }
 
@@ -444,6 +463,7 @@ private struct EpisodeRow: View {
         case .outage: "Corte de luz"
         case .avr: "AVR activo"
         case .batteryTest: "Test de batería"
+        case .microOutage: "Microcorte"
         }
     }
 
@@ -506,6 +526,7 @@ private struct DayTable: View {
             GridRow {
                 Text("Día").gridColumnAlignment(.leading)
                 Text("Cortes")
+                Text("Micro")
                 Text("Sin luz")
                 Text("AVR")
                 Text("Con AVR")
@@ -520,6 +541,7 @@ private struct DayTable: View {
                 GridRow {
                     Text(d.date, format: .dateTime.weekday(.abbreviated).day().month())
                     Text("\(d.outages)")
+                    Text("\(d.microOutages)")
                     Text(d.outageSeconds > 0 ? d.outageSeconds.durationText : "—")
                     Text("\(d.avrCount)")
                     Text(d.avrSeconds > 0 ? d.avrSeconds.durationText : "—")
@@ -584,6 +606,12 @@ enum HistoryCSV {
                 a.imported ? "si" : "no", "", "",
             ].joined(separator: ","))
         }
+        for m in snap.microOutages.sorted(by: { $0.start < $1.start }) {
+            rows.append([
+                "microcorte", stamp(m.start), stamp(m.end), String(Int(m.end.timeIntervalSince(m.start))),
+                "", "", "", "", "", "", "", "", "", "no", "", "",
+            ].joined(separator: ","))
+        }
         for t in snap.batteryTests.sorted(by: { $0.start < $1.start }) {
             rows.append([
                 "test_bateria", stamp(t.start), stamp(t.start.addingTimeInterval(t.duration)),
@@ -596,10 +624,10 @@ enum HistoryCSV {
     }
 
     static func days(_ days: [DaySummary]) -> String {
-        var rows = ["dia,cortes,sin_luz_s,avr,con_avr_s,entrada_min_v,entrada_prom_v,entrada_max_v"]
+        var rows = ["dia,cortes,microcortes,sin_luz_s,avr,con_avr_s,entrada_min_v,entrada_prom_v,entrada_max_v"]
         for d in days.sorted(by: { $0.day < $1.day }) {
             rows.append([
-                d.day, String(d.outages), String(Int(d.outageSeconds)), String(d.avrCount), String(Int(d.avrSeconds)),
+                d.day, String(d.outages), String(d.microOutages), String(Int(d.outageSeconds)), String(d.avrCount), String(Int(d.avrSeconds)),
                 num(d.inputMin), num(d.inputAverage), num(d.inputMax),
             ].joined(separator: ","))
         }

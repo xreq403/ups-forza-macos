@@ -219,6 +219,14 @@ public actor MonitorCore {
     }
 
     /// Borra el historial y, si se pide, el registro de texto.
+    /// Fusiona el historial de otro monitor (JSONL), p. ej. el de la app en modo local.
+    public func mergeHistory(_ data: Data) -> Int {
+        guard let history else { return 0 }
+        let n = history.merge(jsonl: data)
+        log.write("Historial: \(n) registros fusionados desde la app")
+        return n
+    }
+
     public func clearHistory(includeLogs: Bool) {
         history?.clear()
         if includeLogs { log.clear() }
