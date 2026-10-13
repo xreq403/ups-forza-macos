@@ -89,6 +89,16 @@ final class UPSMonitor {
         historyRevision += 1
     }
 
+    func powerSettings() async throws -> SystemPowerSettings {
+        guard let backend else { throw DaemonBackendError.noProxy }
+        return try await backend.powerSettings()
+    }
+
+    func setAutoRestart(_ on: Bool) async throws {
+        guard let backend else { throw DaemonBackendError.noProxy }
+        try await backend.setAutoRestart(on)
+    }
+
     func sendTestNotification() {
         notifier.post("UPS Forza", "Las notificaciones funcionan. Así se verán los avisos de corte de luz.")
     }

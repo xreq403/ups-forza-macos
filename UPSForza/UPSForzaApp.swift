@@ -31,6 +31,7 @@ struct UPSForzaApp: App {
             SettingsView()
                 .environment(monitor)
         }
+        .windowResizability(.contentMinSize)
     }
 }
 

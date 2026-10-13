@@ -12,6 +12,8 @@ protocol MonitorBackend: AnyObject, Sendable {
     func shutdownNow() async throws
     func history(days: Int) async throws -> HistorySnapshot
     func clearHistory(includeLogs: Bool) async throws
+    func powerSettings() async throws -> SystemPowerSettings
+    func setAutoRestart(_ on: Bool) async throws
 }
 
 // MARK: - Local (sin daemon)
@@ -44,9 +46,16 @@ final class LocalBackend: MonitorBackend {
     func shutdownNow() async throws { await core.shutdownNow() }
     func history(days: Int) async throws -> HistorySnapshot { await core.history(days: days) }
     func clearHistory(includeLogs: Bool) async throws { await core.clearHistory(includeLogs: includeLogs) }
+    func powerSettings() async throws -> SystemPowerSettings { PowerManagement.current() }
+    func setAutoRestart(_ on: Bool) async throws { throw PowerManagementError.notRoot }
 }
 
 // MARK: - Daemon root por XPC
+
+struct DaemonCommandError: Error, CustomStringConvertible {
+    let message: String
+    var description: String { message }
+}
 
 enum DaemonBackendError: Error, CustomStringConvertible {
     case noProxy
@@ -115,6 +124,20 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
         try await call { proxy, done in proxy.clearHistory(includeLogs: includeLogs) { done(.success(())) } }
     }
 
+    func powerSettings() async throws -> SystemPowerSettings {
+        let data: Data = try await call { proxy, done in
+            proxy.powerSettings { data in
+                done(data.map { .success($0) } ?? .failure(DaemonBackendError.badReply))
+            }
+        }
+        return try DaemonIdentity.jsonDecoder.decode(SystemPowerSettings.self, from: data)
+    }
+
+    func setAutoRestart(_ on: Bool) async throws {
+        let error: String? = try await call { proxy, done in proxy.setAutoRestart(on) { done(.success($0)) } }
+        if let error { throw DaemonCommandError(message: error) }
+    }
+
     func history(days: Int) async throws -> HistorySnapshot {
         let data: Data = try await call { proxy, done in
             proxy.history(days: days) { data in
@@ -124,8 +147,9 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
         return try DaemonIdentity.jsonDecoder.decode(HistorySnapshot.self, from: data)
     }
 
-    /// Llama al daemon y espera la respuesta, con un límite de 5 s por si no responde.
+    /// Llama al daemon y espera la respuesta, con un límite (`timeout`) por si no responde.
     private func call<T: Sendable>(
+        timeout: TimeInterval = 5,
         _ body: @escaping (UPSDaemonProtocol, @escaping @Sendable (Result<T, Error>) -> Void) -> Void
     ) async throws -> T {
         let once = ResumeOnce<T>()
@@ -139,7 +163,7 @@ final class DaemonBackend: MonitorBackend, @unchecked Sendable {
                 return
             }
             body(proxy) { once.resume($0) }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 once.resume(.failure(DaemonBackendError.timeout))
             }
         }

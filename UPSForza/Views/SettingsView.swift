@@ -40,6 +40,8 @@ struct SettingsView: View {
 
             DaemonSection()
 
+            RecoverySection()
+
             Section("Sistema") {
                 LoginItemToggle()
                 LabeledContent("Notificaciones") {
@@ -79,12 +81,20 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480)
-        .fixedSize(horizontal: false, vertical: true)
+        // El formulario agrupado tiene scroll propio: alto acotado en vez de crecer
+        // con el contenido. Se puede agrandar hasta el máximo.
+        // El tamaño lo maneja la ventana (ResizableWindow): la vista solo se adapta.
+        .frame(minWidth: 480, maxWidth: .infinity, minHeight: 420, maxHeight: .infinity)
+        .background(ResizableWindow(
+            initialSize: NSSize(width: 480, height: 820),
+            minSize: NSSize(width: 480, height: 420),
+            maxSize: NSSize(width: 720, height: 980),
+            autosaveName: "UPSForzaSettingsWindow"
+        ))
     }
 }
 
-/// Registra la app como ítem de inicio de sesión (Ajustes → General → Ítems de inicio).
+/// Registra la app como ítem de inicio de sesión (Ajustes > General > Items de inicio).
 struct LoginItemToggle: View {
     @State private var enabled = SMAppService.mainApp.status == .enabled
     @State private var error: String?
@@ -157,7 +167,7 @@ struct DaemonSection: View {
     private var detailText: String {
         switch monitor.daemon.state {
         case .enabled: "La UPS la vigila el servicio."
-        case .requiresApproval: "Apruébalo en Ajustes del Sistema → General → Ítems de inicio y extensiones."
+        case .requiresApproval: "Apruébalo en Ajustes del Sistema > General > Ítems de inicio y extensiones."
         case .notRegistered: "La UPS la vigila esta app mientras está abierta."
         case .notFound: "No se encontró el servicio dentro de la app."
         }

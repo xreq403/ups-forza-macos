@@ -141,6 +141,22 @@ final class DaemonService: NSObject, UPSDaemonProtocol {
         }
     }
 
+    func powerSettings(reply: @escaping @Sendable (Data?) -> Void) {
+        reply(try? DaemonIdentity.jsonEncoder.encode(PowerManagement.current()))
+    }
+
+    func setAutoRestart(_ on: Bool, reply: @escaping @Sendable (String?) -> Void) {
+        clients.touch()
+        do {
+            try PowerManagement.setAutoRestart(on)
+            log.write("pmset autorestart \(on ? 1 : 0) (encender la Mac al volver la luz: \(on ? "sí" : "no"))")
+            reply(nil)
+        } catch {
+            log.write("ERROR cambiando pmset autorestart: \(error)")
+            reply(String(describing: error))
+        }
+    }
+
     func history(days: Int, reply: @escaping @Sendable (Data?) -> Void) {
         Task {
             let snap = await core.history(days: days)

@@ -20,6 +20,7 @@ extension ForzaUPS: UPSDevice {
     public func stop() {
         transport.stop()
     }
+
 }
 
 // MARK: - Modelo compartido con la app (también viaja por XPC como JSON)
@@ -30,6 +31,20 @@ public struct MonitorSettings: Codable, Sendable, Equatable {
     public var beeperEnabled = true
 
     public init() {}
+
+    // Decodificación tolerante: un settings.json de una versión anterior (sin los
+    // campos nuevos) tiene que seguir leyéndose, no volver a los valores por defecto.
+    private enum CodingKeys: String, CodingKey {
+        case pollInterval, policy, beeperEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = MonitorSettings()
+        pollInterval = try c.decodeIfPresent(Int.self, forKey: .pollInterval) ?? d.pollInterval
+        policy = try c.decodeIfPresent(ShutdownPolicy.self, forKey: .policy) ?? d.policy
+        beeperEnabled = try c.decodeIfPresent(Bool.self, forKey: .beeperEnabled) ?? d.beeperEnabled
+    }
 }
 
 public enum LinkState: String, Codable, Sendable {

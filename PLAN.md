@@ -222,7 +222,11 @@ Tras 3 intentos fallidos deja de insistir hasta el próximo cambio o reconexión
     - exportación a CSV de episodios o resumen diario.
   - **Borrar datos** (Historial → *Borrar…*, o Ajustes → Sistema), con confirmación: solo el historial, o el historial y los registros de texto. Después no se vuelve a importar.
   - **Importación inicial:** al crearse, el historial se reconstruye a partir de los registros de texto existentes. Los episodios importados se marcan "del registro" porque son aproximados.
-- [ ] Controles: test de batería (`T`), cancelar apagado (`C`) y apagar la UPS con `S<n>`, con confirmación
+- [x] Recuperación tras un corte (2026-10-13): **Encender la Mac al volver la luz** (`pmset autorestart`, lo lee y cambia el daemon root). Quedó activado en la Mac mini.
+  - Se implementó y probó el apagado programado de la salida (`S<n>`), pero **la NT-2402PRO lo rechaza** (responde `N` con luz y en batería; ver spec.md §3.4). Se quitó de la app.
+  - Por eso la Mac arranca sola solo si el corte agota la batería de la UPS; si la luz vuelve antes, queda apagada. Se descartó el encendido programado (`pmset schedule poweron`).
+- [ ] Prueba de recuperación con `autorestart`: verificar que, tras agotarse la batería, la UPS restablece la salida al volver la luz y la Mac arranca sola
+- [ ] Test de batería (`T`): probarlo y agregarlo como control (el engine debe ignorar `onBattery` mientras b2 = 1)
 
 ### Fase 3 — Extras
 - [ ] Estimación de autonomía por la pendiente del voltaje

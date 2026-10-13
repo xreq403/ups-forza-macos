@@ -14,6 +14,21 @@ public struct ShutdownPolicy: Codable, Equatable, Sendable {
     public var debounceReadings = 2
 
     public init() {}
+
+    // Decodificación tolerante a versiones anteriores (campos faltantes = valor por defecto).
+    private enum CodingKeys: String, CodingKey {
+        case onUPSLowBattery, minBatteryPercent, maxMinutesOnBattery, warningSeconds, debounceReadings
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ShutdownPolicy()
+        onUPSLowBattery = try c.decodeIfPresent(Bool.self, forKey: .onUPSLowBattery) ?? d.onUPSLowBattery
+        minBatteryPercent = try c.decodeIfPresent(Int.self, forKey: .minBatteryPercent) ?? d.minBatteryPercent
+        maxMinutesOnBattery = try c.decodeIfPresent(Int.self, forKey: .maxMinutesOnBattery) ?? d.maxMinutesOnBattery
+        warningSeconds = try c.decodeIfPresent(Int.self, forKey: .warningSeconds) ?? d.warningSeconds
+        debounceReadings = try c.decodeIfPresent(Int.self, forKey: .debounceReadings) ?? d.debounceReadings
+    }
 }
 
 public enum ShutdownReason: Codable, Equatable, Sendable, CustomStringConvertible {

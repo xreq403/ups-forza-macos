@@ -36,7 +36,7 @@ final class DaemonController {
     }
 
     /// Registra el daemon. La primera vez macOS pide aprobarlo en
-    /// Ajustes del Sistema → General → Ítems de inicio.
+    /// Ajustes del Sistema > General > Ítems de inicio.
     func register() {
         do {
             try service.register()

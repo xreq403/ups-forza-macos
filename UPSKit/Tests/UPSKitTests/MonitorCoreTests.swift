@@ -63,13 +63,14 @@ struct MonitorCoreTests {
 
     func eventKinds(_ snap: MonitorSnapshot) -> [CoreEvent] { snap.events.map(\.event) }
 
-    @Test func forcesImmediatelyWithoutClient() async {
+    @Test func forcesImmediatelyWithoutClient() async throws {
         let ups = FakeUPS()
         let rec = ShutdownRecorder()
         let core = MonitorCore(device: ups, settings: criticalSettings(), log: log,
                                forced: .available(grace: 60, hasActiveClient: { false }, execute: rec.record))
         ups.status = criticalStatus()
         await core.pollOnce()
+        try await Task.sleep(for: .seconds(0.2))   // sin esperar el margen: solo lo que tarda programar S
         #expect(rec.reasons == [.upsBatteryLow])
         let snap = await core.snapshot(since: 0)
         #expect(eventKinds(snap).contains(.shutdownForced(reason: .upsBatteryLow)))
@@ -188,5 +189,40 @@ struct MonitorCoreBeeperTests {
         await core.pollOnce()
         #expect(ups.status.beeperOn == false)
         #expect(ups.beeperCommands == 0)
+    }
+}
+
+
+struct SettingsCompatibilityTests {
+    @Test func oldSettingsJSONKeepsValues() throws {
+        // settings.json de una versión anterior (sin campos opcionales).
+        let old = #"{"pollInterval":5,"policy":{"minBatteryPercent":10,"maxMinutesOnBattery":0,"debounceReadings":2,"warningSeconds":60,"onUPSLowBattery":true},"beeperEnabled":false}"#
+        let s = try JSONDecoder().decode(MonitorSettings.self, from: Data(old.utf8))
+        #expect(s.beeperEnabled == false)
+        #expect(s.policy.minBatteryPercent == 10)
+    }
+
+    @Test func ignoresUnknownKeys() throws {
+        // settings.json escrito por la versión que tenía el apagado de la salida (S<n>).
+        let withRemoved = #"{"pollInterval":5,"policy":{"minBatteryPercent":10},"beeperEnabled":false,"upsOutputOffAfterShutdown":false,"upsOutputOffDelayMinutes":5}"#
+        let s = try JSONDecoder().decode(MonitorSettings.self, from: Data(withRemoved.utf8))
+        #expect(s.beeperEnabled == false)
+        #expect(s.policy.minBatteryPercent == 10)
+        #expect(s.policy.warningSeconds == ShutdownPolicy().warningSeconds)
+    }
+}
+
+struct PowerManagementTests {
+    @Test func parsesAutoRestartNotAtConnect() {
+        let out = """
+        System-wide power settings:
+        Currently in use:
+         autorestartatconnect 1
+         autorestart          0
+         powernap             1
+        """
+        #expect(PowerManagement.parseAutoRestart(out) == false)
+        #expect(PowerManagement.parseAutoRestart(" autorestart 1") == true)
+        #expect(PowerManagement.parseAutoRestart(" autorestartatconnect 1") == nil)
     }
 }

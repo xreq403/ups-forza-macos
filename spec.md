@@ -146,6 +146,13 @@ raw : 23 6d 01 20 6c 20 6d 01 20 6c 20 04 20 60 28 03 20 12 c0 00 20 e9 20 3c 20
 
 NUT acepta para el retardo de apagado un rango de 12 a 540 segundos.
 
+**Prueba de `S09` (2026-10-13, con luz):**
+- La UPS respondió **`N`** (rechazado) y no activó el bit b1 (*Shutdown Active*, confirmado en NUT como el bit 44 de la cadena de estado).
+- `C` no tuvo efecto visible porque no había nada programado.
+- **En batería (2026-10-13) también respondió `N`.**
+- **Conclusión: la NT-2402PRO no admite `S<n>`** (apagado programado de la salida), ni con luz ni en batería.
+- La recuperación automática depende de que la batería se agote: la UPS corta la salida por batería baja y, al volver la luz, la reenciende, y la Mac arranca con `pmset autorestart 1`. Si la luz vuelve antes de que se agote la batería, la Mac queda apagada.
+
 ### 3.5 Comportamiento de la batería (prueba de corte)
 
 Prueba hecha el 2026-10-12, desenchufando la UPS de la red con una carga del 4–7 %:
