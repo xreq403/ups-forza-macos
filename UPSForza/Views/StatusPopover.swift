@@ -68,7 +68,7 @@ struct StatusPopover: View {
             Text("Forza NT-2402PRO")
                 .font(.headline)
             Spacer()
-            StatusPill(phase: monitor.phase, link: monitor.link)
+            StatusPill(phase: monitor.phase, link: monitor.link, onBattery: monitor.status?.onBattery == true)
         }
     }
 
@@ -93,6 +93,9 @@ struct StatusPopover: View {
 struct StatusPill: View {
     let phase: PowerPhase
     let link: LinkState
+    /// Lectura actual de la UPS. El corte se confirma con 2 lecturas (antirrebote), pero
+    /// la interfaz lo muestra desde la primera para no contradecir a la tarjeta de batería.
+    var onBattery = false
 
     var body: some View {
         let (text, color) = content
@@ -103,6 +106,7 @@ struct StatusPill: View {
     private var content: (String, Color) {
         if link != .connected { return (link == .searching ? "Buscando" : "Sin conexión", .gray) }
         switch phase {
+        case .unknown where onBattery, .online where onBattery: return ("En batería", .warningAmber)
         case .unknown: return ("…", .gray)
         case .online: return ("Red eléctrica", .green)
         case .onBattery: return ("En batería", .warningAmber)
